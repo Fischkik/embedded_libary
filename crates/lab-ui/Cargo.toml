@@ -1,0 +1,9 @@
+[package]
+name = "lab-ui"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+egui.workspace = true
+egui_plot.workspace = true
+sim-core.workspace = true

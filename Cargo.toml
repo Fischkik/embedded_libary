@@ -1,0 +1,28 @@
+[workspace]
+resolver = "2"
+members = ["crates/sim-core", "crates/lab-ui", "crates/demos", "crates/app"]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+
+[workspace.dependencies]
+egui = "0.37.0"
+egui_plot = "0.38.0"
+eframe = { version = "0.37.0", features = ["persistence"] }
+egui_kittest = { version = "0.37.0", features = ["wgpu", "snapshot"] }
+serde = { version = "1", features = ["derive"] }
+rustfft = "6.4.1"
+sim-core = { path = "crates/sim-core" }
+lab-ui = { path = "crates/lab-ui" }
+demos = { path = "crates/demos" }
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2
+
+# The simulations do real number crunching every frame; keep them fast in dev builds.
+[profile.dev.package.sim-core]
+opt-level = 3
