@@ -33,6 +33,40 @@ pub fn si_slider<'a>(value: &'a mut f64, range: RangeInclusive<f64>, label: &'a 
         .custom_parser(parse_si)
 }
 
+/// Put a slider into a `ui.horizontal_wrapped` row so that it moves to the next line when
+/// it does not fit.
+///
+/// egui cannot wrap a slider by itself: a slider is several parts in a row (bar, number,
+/// label) and its width is only known after it has been drawn. Without this it runs off
+/// the right edge and drags every graph below it out of view. Here the width measured in
+/// the previous frame is used to decide where the slider goes. `key` must be unique within
+/// the row; the slider's label is a good choice.
+pub fn wrap<R>(ui: &mut Ui, key: &str, add: impl FnOnce(&mut Ui) -> R) -> R {
+    let id = ui.make_persistent_id(("wrap", key));
+    let width = ui.ctx().data(|d| d.get_temp::<f32>(id)).unwrap_or(340.0);
+    let out = ui.allocate_ui(egui::vec2(width, ui.spacing().interact_size.y), add);
+    ui.ctx().data_mut(|d| d.insert_temp(id, out.response.rect.width()));
+    out.inner
+}
+
+/// A one-line colour key: a small coloured square and a short text per item. For
+/// pictures drawn with `plots::plot_bare`.
+pub fn key(ui: &mut Ui, items: &[(egui::Color32, &str)]) {
+    ui.horizontal_wrapped(|ui| {
+        let font = egui::TextStyle::Small.resolve(ui.style());
+        let color = ui.visuals().text_color();
+        for (swatch, text) in items {
+            // Square and text are drawn as one piece so that a line break never separates them.
+            let galley = ui.painter().layout_no_wrap((*text).to_owned(), font.clone(), color);
+            let size = egui::vec2(18.0 + galley.size().x + 8.0, galley.size().y.max(12.0));
+            let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+            let square = egui::Rect::from_center_size(egui::pos2(rect.left() + 6.0, rect.center().y), egui::vec2(12.0, 12.0));
+            ui.painter().rect_filled(square, 2.0, *swatch);
+            ui.painter().galley(egui::pos2(rect.left() + 18.0, rect.center().y - galley.size().y / 2.0), galley, color);
+        }
+    });
+}
+
 /// A group box with a small title.
 pub fn group<R>(ui: &mut Ui, title: &str, add: impl FnOnce(&mut Ui) -> R) -> R {
     egui::Frame::group(ui.style())

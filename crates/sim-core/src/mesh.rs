@@ -62,6 +62,10 @@ pub fn address_kind(addr: u16) -> &'static str {
         0x0000 => "unassigned",
         0x0001..=0x7FFF => "unicast (one element of one node)",
         0x8000..=0xBFFF => "virtual (stands for a label UUID)",
+        0xFFF9 => "group: all IPT border routers",
+        0xFFFA => "group: all IPT nodes",
+        0xFFFB => "group: all directed forwarding nodes",
+        0xFF00..=0xFFF8 => "group: fixed, reserved for future use",
         0xFFFC => "group: all proxies",
         0xFFFD => "group: all friends",
         0xFFFE => "group: all relays",
@@ -400,6 +404,305 @@ pub fn flood(nodes: &[FloodNode], p: &FloodParams) -> FloodResult {
     result
 }
 
+// ---------------------------------------------------------------------------------
+// Publish and subscribe (3.4.2)
+// ---------------------------------------------------------------------------------
+
+/// Does a node with this unicast address and these subscriptions accept a message sent
+/// to `dst`? A message is for a node if it is sent to one of its own addresses, to a
+/// group or virtual address it subscribes to, or to all-nodes.
+pub fn accepts(own: u16, subscriptions: &[u16], dst: u16) -> bool {
+    dst == own || dst == 0xFFFF || subscriptions.contains(&dst)
+}
+
+// ---------------------------------------------------------------------------------
+// Segmentation (3.5.2.2, 3.5.3)
+// ---------------------------------------------------------------------------------
+
+/// An Upper Transport Access PDU of up to 15 octets fits into one unsegmented message;
+/// larger ones are cut into segments of 12 octets (the last may be shorter).
+pub const MAX_UNSEGMENTED: usize = 15;
+pub const SEGMENT_OCTETS: usize = 12;
+/// SegO and SegN are 5 bits: at most 32 segments.
+pub const MAX_SEGMENTS: usize = 32;
+
+/// One Segmented Access message: header and segment.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Segment {
+    /// SEG (1), AKF (1), AID (6) | SZMIC (1), SeqZero (13), SegO (5), SegN (5).
+    pub header: [u8; 4],
+    pub seg_o: u8,
+    pub seg_n: u8,
+    pub payload: Vec<u8>,
+}
+
+/// Cut an Upper Transport Access PDU into segments. `seq_zero` is the low 13 bits of
+/// the sequence number of the first segment. Returns `None` if the PDU is too long.
+pub fn segment(upper: &[u8], akf: bool, aid: u8, szmic: bool, seq: u32) -> Option<Vec<Segment>> {
+    let n = upper.len().div_ceil(SEGMENT_OCTETS).max(1);
+    if n > MAX_SEGMENTS {
+        return None;
+    }
+    let seq_zero = (seq & 0x1FFF) as u32;
+    let seg_n = (n - 1) as u32;
+    Some(
+        upper
+            .chunks(SEGMENT_OCTETS)
+            .enumerate()
+            .map(|(o, chunk)| {
+                let o = o as u32;
+                let first = 0x80 | (akf as u8) << 6 | (aid & 0x3F);
+                let rest = (szmic as u32) << 23 | seq_zero << 10 | o << 5 | seg_n;
+                let r = rest.to_be_bytes();
+                Segment { header: [first, r[1], r[2], r[3]], seg_o: o as u8, seg_n: seg_n as u8, payload: chunk.to_vec() }
+            })
+            .collect(),
+    )
+}
+
+/// Read SeqZero, SegO and SegN back from a segment header.
+pub fn parse_segment_header(h: &[u8; 4]) -> (u16, u8, u8) {
+    let rest = u32::from_be_bytes([0, h[1], h[2], h[3]]);
+    (((rest >> 10) & 0x1FFF) as u16, ((rest >> 5) & 0x1F) as u8, (rest & 0x1F) as u8)
+}
+
+/// A Segment Acknowledgment message: SEG = 0, opcode 0x00, OBO, SeqZero, two RFU bits,
+/// then AckedSegments with bit n set for every segment n received.
+pub fn segment_ack(seq_zero: u16, received: &[bool]) -> [u8; 7] {
+    let acked: u32 = received.iter().enumerate().filter(|(_, r)| **r).fold(0, |a, (i, _)| a | 1 << i);
+    let mid = (seq_zero as u16 & 0x1FFF) << 2;
+    let mut out = [0u8; 7];
+    out[0] = 0x00;
+    out[1..3].copy_from_slice(&mid.to_be_bytes());
+    out[3..].copy_from_slice(&acked.to_be_bytes());
+    out
+}
+
+/// One round of sending: which segments get lost on the way (`lost[i]`), what the
+/// receiver acknowledges, and which segments are sent again in the next round.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SarRound {
+    pub sent: Vec<usize>,
+    pub received_after: Vec<bool>,
+    pub ack: [u8; 7],
+}
+
+/// Send segments in rounds: every round sends all segments not yet acknowledged; a
+/// segment in `loss_plan[round]` is lost in that round.
+pub fn sar_rounds(n: usize, seq_zero: u16, loss_plan: &[Vec<usize>], max_rounds: usize) -> Vec<SarRound> {
+    let mut received = vec![false; n];
+    let mut rounds = Vec::new();
+    for r in 0..max_rounds {
+        let sent: Vec<usize> = (0..n).filter(|i| !received[*i]).collect();
+        if sent.is_empty() {
+            break;
+        }
+        for &i in &sent {
+            if !loss_plan.get(r).is_some_and(|l| l.contains(&i)) {
+                received[i] = true;
+            }
+        }
+        rounds.push(SarRound { sent, received_after: received.clone(), ack: segment_ack(seq_zero, &received) });
+    }
+    rounds
+}
+
+// ---------------------------------------------------------------------------------
+// Friendship: a Low Power node polls a Friend that stores its messages (3.5.5, 3.6.5)
+// ---------------------------------------------------------------------------------
+
+/// Allowed ranges (Tables 3.37, 3.38, 3.41): ReceiveDelay 10..=255 ms, ReceiveWindow
+/// 1..=255 ms, PollTimeout 1 s ..= 0x34BBFF x 100 ms (about 96 hours).
+pub const RECEIVE_DELAY_MS: (f64, f64) = (10.0, 255.0);
+pub const RECEIVE_WINDOW_MS: (f64, f64) = (1.0, 255.0);
+pub const POLL_TIMEOUT_S: (f64, f64) = (1.0, 0x34BBFF as f64 * 0.1);
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Friendship {
+    /// How often the Low Power node wakes up and sends a Friend Poll.
+    pub poll_interval_s: f64,
+    /// Time from the end of the poll until the friend answers.
+    pub receive_delay_ms: f64,
+    /// How long the Low Power node listens for the answer.
+    pub receive_window_ms: f64,
+    /// Messages for the node arriving at the friend, per hour.
+    pub messages_per_hour: f64,
+    pub tx_a: f64,
+    pub rx_a: f64,
+    pub sleep_a: f64,
+    /// Radio-on time to send one Friend Poll, including start-up.
+    pub poll_tx_s: f64,
+}
+
+impl Friendship {
+    /// Charge of one poll: send the poll, sleep through the delay, listen for the window.
+    pub fn poll_charge_c(&self) -> f64 {
+        self.poll_tx_s * self.tx_a + self.receive_window_ms * 1e-3 * self.rx_a
+    }
+
+    pub fn average_a(&self) -> f64 {
+        self.poll_charge_c() / self.poll_interval_s + self.sleep_a
+    }
+
+    /// A node that never sleeps but listens all the time, as a relay does.
+    pub fn always_listening_a(&self) -> f64 {
+        self.rx_a
+    }
+
+    /// A message for the node waits at the friend for the next poll: half an interval on
+    /// average, a whole one at worst, plus the receive delay.
+    pub fn average_delay_s(&self) -> f64 {
+        self.poll_interval_s / 2.0 + self.receive_delay_ms * 1e-3
+    }
+
+    pub fn battery_life_s(&self, capacity_mah: f64) -> f64 {
+        capacity_mah * 3.6 / self.average_a()
+    }
+}
+
+// ---------------------------------------------------------------------------------
+// Provisioning (section 5), AES-CMAC algorithm. Formulas as in Zephyr's
+// subsys/bluetooth/mesh/crypto.c: ConfirmationSalt = s1(ConfirmationInputs);
+// ConfirmationKey = k1(ECDHSecret, ConfirmationSalt, "prck"); Confirmation =
+// AES-CMAC(ConfirmationKey, Random || AuthValue); ProvisioningSalt =
+// s1(ConfirmationSalt || RandomProvisioner || RandomDevice); SessionKey, SessionNonce
+// (bytes 3..16) and DeviceKey = k1(ECDHSecret, ProvisioningSalt, "prsk" / "prsn" /
+// "prdk"); the 25-octet provisioning data is encrypted with AES-CCM and an 8-octet MIC.
+// The elliptic-curve step that produces ECDHSecret is not computed here.
+// ---------------------------------------------------------------------------------
+
+/// One side's view of a provisioning run.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProvSide {
+    pub confirmation_salt: Key,
+    pub confirmation_key: Key,
+    pub own_confirmation: Key,
+}
+
+pub fn prov_side(ecdh_secret: &[u8; 32], conf_inputs: &[u8], own_random: &Key, auth: &Key) -> ProvSide {
+    let confirmation_salt = s1(conf_inputs);
+    let confirmation_key = k1(ecdh_secret, &confirmation_salt, b"prck");
+    let own_confirmation = cmac(&confirmation_key, &[own_random.as_slice(), auth.as_slice()].concat());
+    ProvSide { confirmation_salt, confirmation_key, own_confirmation }
+}
+
+/// Does a revealed random number match the confirmation received earlier?
+pub fn check_confirmation(side: &ProvSide, received_confirmation: &Key, revealed_random: &Key, auth: &Key) -> bool {
+    cmac(&side.confirmation_key, &[revealed_random.as_slice(), auth.as_slice()].concat()) == *received_confirmation
+}
+
+/// The provisioning data: NetKey (16), key index (2), flags (1), IV index (4), unicast address (2).
+pub fn provisioning_data(net_key: &Key, key_index: u16, flags: u8, iv_index: u32, address: u16) -> Vec<u8> {
+    let mut d = net_key.to_vec();
+    d.extend(key_index.to_be_bytes());
+    d.push(flags);
+    d.extend(iv_index.to_be_bytes());
+    d.extend(address.to_be_bytes());
+    d
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionKeys {
+    pub provisioning_salt: Key,
+    pub session_key: Key,
+    pub session_nonce: [u8; 13],
+    pub device_key: Key,
+}
+
+pub fn session_keys(ecdh_secret: &[u8; 32], confirmation_salt: &Key, random_provisioner: &Key, random_device: &Key) -> SessionKeys {
+    let provisioning_salt = s1(&[confirmation_salt.as_slice(), random_provisioner.as_slice(), random_device.as_slice()].concat());
+    let nonce_full = k1(ecdh_secret, &provisioning_salt, b"prsn");
+    SessionKeys {
+        provisioning_salt,
+        session_key: k1(ecdh_secret, &provisioning_salt, b"prsk"),
+        session_nonce: nonce_full[3..].try_into().unwrap_or([0; 13]),
+        device_key: k1(ecdh_secret, &provisioning_salt, b"prdk"),
+    }
+}
+
+/// AuthValue for Output OOB with a number shown on the device: the number in the last
+/// bytes, zeros before. No OOB: all zeros.
+pub fn auth_value(number: Option<u32>) -> Key {
+    let mut a = [0u8; 16];
+    if let Some(n) = number {
+        a[12..].copy_from_slice(&n.to_be_bytes());
+    }
+    a
+}
+
+/// A man in the middle: the attacker has done the key exchange with each side separately
+/// (`secret_p` with the provisioner) and must present a confirmation to the provisioner
+/// before the provisioner reveals its random number. It uses `guessed_auth`. Returns
+/// whether the provisioner accepts the attacker's revealed random number.
+pub fn mitm_accepted(secret_p: &[u8; 32], conf_inputs: &[u8], true_auth: &Key, guessed_auth: &Key, attacker_random: &Key, provisioner_random: &Key) -> bool {
+    let provisioner = prov_side(secret_p, conf_inputs, provisioner_random, true_auth);
+    let fake = prov_side(secret_p, conf_inputs, attacker_random, guessed_auth);
+    check_confirmation(&provisioner, &fake.own_confirmation, attacker_random, true_auth)
+}
+
+// ---- Replay protection and the IV Index (3.9.3, 3.9.8, 3.11.5) ----
+
+/// Number of 24-bit sequence numbers: 3.9.3, "an element can transmit 16,777,216 messages
+/// before repeating a nonce".
+pub const SEQ_COUNT: u32 = 1 << 24;
+/// 3.11.5: "A node shall not start an IV Update procedure more often than once every 192
+/// hours." Each of the two states lasts at least 96 hours.
+pub const IV_UPDATE_MIN_PERIOD_H: f64 = 192.0;
+pub const IV_STATE_MIN_H: f64 = 96.0;
+/// 3.11.5: a beacon with an IV Index "greater than the last known IV Index + 42" is ignored.
+pub const IV_RECOVERY_LIMIT: u32 = 42;
+
+/// IVISeq (3.9.8): "the IV Index is the four most significant octets and the sequence
+/// number is the three least significant octets".
+pub fn iviseq(iv_index: u32, seq: u32) -> u64 {
+    (iv_index as u64) << 24 | (seq & 0xFF_FFFF) as u64
+}
+
+/// The replay protection list (3.9.8): per source address, the last valid IVISeq. "Any
+/// future messages from the same originating element that contain an IVISeq value that is
+/// lower than or equal to the last valid IVISeq value ... shall be discarded."
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ReplayList {
+    pub entries: std::collections::BTreeMap<u16, u64>,
+}
+
+impl ReplayList {
+    /// `Ok(())` and the entry updated if the message is new, `Err(last)` if it is a replay.
+    pub fn check(&mut self, src: u16, iv_index: u32, seq: u32) -> Result<(), u64> {
+        let v = iviseq(iv_index, seq);
+        match self.entries.get(&src) {
+            Some(&last) if v <= last => Err(last),
+            _ => {
+                self.entries.insert(src, v);
+                Ok(())
+            }
+        }
+    }
+}
+
+/// The IV Index a receiver uses for a packet whose IVI bit is `ivi` (3.11.5, Table 3.84): a
+/// node accepts the current IV Index and the one before it, in both states, and the IVI bit
+/// (the least significant bit) says which of the two the sender used.
+pub fn rx_iv_index(current: u32, ivi: bool) -> u32 {
+    if (current & 1 == 1) == ivi { current } else { current.wrapping_sub(1) }
+}
+
+/// The IV Index used for sending (Table 3.84): the current one in Normal Operation, the one
+/// before it while the IV Update is in progress.
+pub fn tx_iv_index(current: u32, update_in_progress: bool) -> u32 {
+    if update_in_progress { current.wrapping_sub(1) } else { current }
+}
+
+/// Whether a beacon announcing `beacon_iv` is accepted in Normal Operation (3.11.5).
+pub fn beacon_iv_accepted(last_known: u32, beacon_iv: u32) -> bool {
+    beacon_iv >= last_known && beacon_iv - last_known <= IV_RECOVERY_LIMIT
+}
+
+/// How long the sequence numbers last when one message is sent every `interval_s`.
+pub fn seq_lifetime_s(interval_s: f64) -> f64 {
+    SEQ_COUNT as f64 * interval_s
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -527,4 +830,178 @@ mod tests {
         let storm = flood(&line(6, true), &FloodParams { use_cache: false, ttl: 20, ..base });
         assert!(storm.transmissions.len() > 50, "{}", storm.transmissions.len());
     }
+
+    #[test]
+    fn address_kinds_follow_the_specification_table() {
+        assert_eq!(address_kind(0x0000), "unassigned");
+        assert!(address_kind(0x0001).starts_with("unicast") && address_kind(0x7FFF).starts_with("unicast"));
+        assert!(address_kind(0x8000).starts_with("virtual") && address_kind(0xBFFF).starts_with("virtual"));
+        assert_eq!(address_kind(0xC000), "group");
+        assert_eq!(address_kind(0xFEFF), "group");
+        assert_eq!(address_kind(0xFFFB), "group: all directed forwarding nodes");
+        assert_eq!(address_kind(0xFFFF), "group: all nodes");
+        assert!(accepts(0x0005, &[0xC001], 0xC001) && accepts(0x0005, &[], 0x0005) && accepts(0x0005, &[], 0xFFFF));
+        assert!(!accepts(0x0005, &[0xC001], 0xC002));
+    }
+
+    #[test]
+    fn segmentation_and_acknowledgment() {
+        // 30 octets: 12 + 12 + 6, SegN = 2.
+        let upper: Vec<u8> = (0..30).collect();
+        let segs = segment(&upper, true, 0x26, false, 0x3129AB).unwrap();
+        assert_eq!(segs.len(), 3);
+        assert_eq!(segs.iter().map(|s| s.payload.len()).collect::<Vec<_>>(), [12, 12, 6]);
+        assert_eq!(segs[0].header[0], 0x80 | 0x40 | 0x26);
+        for (o, s) in segs.iter().enumerate() {
+            assert_eq!(parse_segment_header(&s.header), ((0x3129AB & 0x1FFF) as u16, o as u8, 2));
+        }
+        assert!(segment(&vec![0; 12 * 32], false, 0, false, 0).is_some());
+        assert!(segment(&vec![0; 12 * 32 + 1], false, 0, false, 0).is_none());
+        // Segments 0 and 2 arrive: AckedSegments = 0b101.
+        let ack = segment_ack(0x09AB, &[true, false, true]);
+        assert_eq!(&ack[3..], &[0, 0, 0, 0b101]);
+        assert_eq!(u16::from_be_bytes([ack[1], ack[2]]) >> 2, 0x09AB);
+        // Round 1 loses segment 1; round 2 sends only segment 1.
+        let rounds = sar_rounds(3, 0x09AB, &[vec![1]], 5);
+        assert_eq!(rounds.len(), 2);
+        assert_eq!(rounds[1].sent, [1]);
+        assert!(rounds[1].received_after.iter().all(|r| *r));
+    }
+
+    #[test]
+    fn message_6_segmented_access_matches_spec() {
+        // Mesh Protocol 1.1 sample data 8.3.6 (Message #6), as in BlueZ unit/test-mesh-crypto.c:
+        // device key, SEQ 0x3129AB, an access payload of 20 octets with a 32-bit TransMIC.
+        let dev_key: Key = unhex("9d6dd0e96eb25dc19a40ed9914f8f03f").unwrap().try_into().unwrap();
+        let nonce: [u8; 13] = unhex("02003129ab0003120112345678").unwrap().try_into().unwrap();
+        let access = unhex("0056341263964771734fbd76e3b40519d1d94a48").unwrap();
+        let upper = ccm_encrypt(&dev_key, &nonce, &[], &access, 4);
+        assert_eq!(upper, unhex("ee9dddfd2169326d23f3afdfcfdc18c52fdef772e0e17308").unwrap());
+        let segs = segment(&upper, false, 0, false, 0x3129AB).unwrap();
+        let lower: Vec<Vec<u8>> = segs.iter().map(|s| [s.header.to_vec(), s.payload.clone()].concat()).collect();
+        assert_eq!(lower, [unhex("8026ac01ee9dddfd2169326d23f3afdf").unwrap(), unhex("8026ac21cfdc18c52fdef772e0e17308").unwrap()]);
+    }
+
+    #[test]
+    fn friendship_power_and_delay() {
+        let f = Friendship { poll_interval_s: 10.0, receive_delay_ms: 100.0, receive_window_ms: 100.0, messages_per_hour: 6.0, tx_a: 7.1e-3, rx_a: 6.5e-3, sleep_a: 1.6e-6, poll_tx_s: 0.5e-3 };
+        // 0.5 ms x 7.1 mA + 100 ms x 6.5 mA = 653.55 µC per poll.
+        assert!((f.poll_charge_c() - 653.55e-6).abs() < 1e-9);
+        // Every 10 s: 65.4 µA + 1.6 µA = 66.96 µA - a hundred times less than listening all the time.
+        assert!((f.average_a() - 66.955e-6).abs() < 1e-9, "{}", f.average_a());
+        assert!(f.always_listening_a() / f.average_a() > 95.0);
+        assert!((f.average_delay_s() - 5.1).abs() < 1e-12);
+        // A 10 ms window cuts the cost of each poll almost tenfold.
+        assert!(Friendship { receive_window_ms: 10.0, ..f }.average_a() < 0.15 * f.average_a());
+        assert_eq!(POLL_TIMEOUT_S.1, 345_599.9);
+    }
+
+    #[test]
+    fn provisioning_confirmation_session_and_mitm() {
+        // k1 and s1 are checked against the spec's sample data above; this test checks
+        // that the provisioning steps fit together, not their exact bytes.
+        let secret = [0x5Au8; 32];
+        let inputs = vec![0x11u8; 145];
+        let (rp, rd) = ([0x01u8; 16], [0x02u8; 16]);
+        let auth = auth_value(Some(123_456));
+        let p = prov_side(&secret, &inputs, &rp, &auth);
+        let d = prov_side(&secret, &inputs, &rd, &auth);
+        assert_eq!(p.confirmation_key, d.confirmation_key);
+        assert!(check_confirmation(&p, &d.own_confirmation, &rd, &auth));
+        assert!(check_confirmation(&d, &p.own_confirmation, &rp, &auth));
+        // A wrong random number or AuthValue fails.
+        assert!(!check_confirmation(&p, &d.own_confirmation, &rp, &auth));
+        assert!(!check_confirmation(&p, &d.own_confirmation, &rd, &auth_value(Some(123_457))));
+        // Both sides derive the same session key and nonce; the data round-trips.
+        let k = session_keys(&secret, &p.confirmation_salt, &rp, &rd);
+        let data = provisioning_data(&[0x7D; 16], 0x0000, 0x00, 0x1234_5678, 0x0B0C);
+        assert_eq!(data.len(), 25);
+        let enc = ccm_encrypt(&k.session_key, &k.session_nonce, &[], &data, 8);
+        assert_eq!(enc.len(), 33);
+        assert_eq!(ccm_decrypt(&k.session_key, &k.session_nonce, &[], &enc, 8), Some(data));
+        // Man in the middle: with no OOB (AuthValue 0) the attacker's confirmation is
+        // accepted; with a number shown on the device, a guess fails.
+        let sp = [0x33u8; 32];
+        assert!(mitm_accepted(&sp, &inputs, &auth_value(None), &auth_value(None), &[9; 16], &rp));
+        assert!(!mitm_accepted(&sp, &inputs, &auth, &auth_value(Some(0)), &[9; 16], &rp));
+        assert!(mitm_accepted(&sp, &inputs, &auth, &auth, &[9; 16], &rp), "a correct guess would work");
+    }
+    #[test]
+    fn replay_list_and_iv_index_follow_the_spec() {
+        // IVISeq layout.
+        assert_eq!(iviseq(0x1234_5678, 0x00_0007), 0x1234_5678_00_0007);
+        // A lower or equal IVISeq is discarded; a higher one replaces the entry.
+        let mut rpl = ReplayList::default();
+        assert_eq!(rpl.check(0x1201, 0x1234_5678, 7), Ok(()));
+        assert_eq!(rpl.check(0x1201, 0x1234_5678, 7), Err(0x1234_5678_00_0007));
+        assert!(rpl.check(0x1201, 0x1234_5678, 3).is_err());
+        assert_eq!(rpl.check(0x1234, 0x1234_5678, 3), Ok(()), "another source has its own entry");
+        assert_eq!(rpl.check(0x1201, 0x1234_5678, 8), Ok(()));
+        // After an IV Update, SEQ 0 under the new IV Index beats any SEQ under the old one.
+        assert_eq!(rpl.check(0x1201, 0x1234_5679, 0), Ok(()));
+        assert!(rpl.check(0x1201, 0x1234_5678, 0xFF_FFFF).is_err());
+
+        // The examples of 3.11.5: current IV Index 0x00101847 in Normal Operation.
+        assert_eq!(tx_iv_index(0x0010_1847, false), 0x0010_1847);
+        assert_eq!(rx_iv_index(0x0010_1847, true), 0x0010_1847);
+        assert_eq!(rx_iv_index(0x0010_1847, false), 0x0010_1846);
+        // IV Update in Progress: current 0x00101848, transmit with 0x00101847.
+        assert_eq!(tx_iv_index(0x0010_1848, true), 0x0010_1847);
+        assert_eq!(rx_iv_index(0x0010_1848, true), 0x0010_1847);
+        assert_eq!(rx_iv_index(0x0010_1848, false), 0x0010_1848);
+
+        // Beacons: at most 42 ahead; 42 updates of 192 h each are the spec's 48 weeks.
+        assert!(beacon_iv_accepted(100, 142) && !beacon_iv_accepted(100, 143) && !beacon_iv_accepted(100, 99));
+        assert_eq!(IV_RECOVERY_LIMIT as f64 * IV_UPDATE_MIN_PERIOD_H / (24.0 * 7.0), 48.0);
+
+        // 3.9.3: one message every five seconds lasts 2.6 years; one per second 194 days.
+        assert!((seq_lifetime_s(5.0) / (365.25 * 86_400.0) - 2.66).abs() < 0.01);
+        assert!((seq_lifetime_s(1.0) / 86_400.0 - 194.18).abs() < 0.01);
+    }
+
+    #[test]
+    fn replayed_network_pdu_decodes_but_is_refused() {
+        // A recorded packet still decrypts perfectly; only the replay list stops it. With an
+        // IV Index two steps on, the IVI bit picks the wrong IV Index and decryption fails.
+        let keys = k2(&key(NET_KEY), &[0]);
+        let pdu = NetworkPdu { ctl: false, ttl: 3, seq: 7, src: 0x1201, dst: 0xffff, transport_pdu: unhex("665a8bde6d9106ea078a").unwrap() };
+        let bytes = encode_network(&pdu, &keys, 0x1234_5678).pdu;
+        let mut rpl = ReplayList::default();
+        for (i, expect_ok) in [true, false].into_iter().enumerate() {
+            let iv = rx_iv_index(0x1234_5678, bytes[0] & 0x80 != 0);
+            let got = decode_network(&bytes, &keys, iv).unwrap();
+            assert_eq!(rpl.check(got.src, iv, got.seq).is_ok(), expect_ok, "reception {i}");
+        }
+        let iv = rx_iv_index(0x1234_567A, bytes[0] & 0x80 != 0);
+        assert_eq!(iv, 0x1234_567A);
+        assert_eq!(decode_network(&bytes, &keys, iv), Err(DecodeError::BadNetMic));
+    }
+
+    #[test]
+    fn provisioning_matches_spec_sample_data_8_7() {
+        // Mesh Protocol 1.1 sections 8.7.8 - 8.7.12 (PB-ADV provisioning, no OOB). Values
+        // copied by script from the specification text, not typed.
+        let ecdh: [u8; 32] = unhex("ab85843a2f6d883f62e5684b38e307335fe6e1945ecd19604105c6f23221eb69").unwrap().try_into().unwrap();
+        let inputs = unhex("00010001000000000000000000000000002c31a47b5779809ef44cb5eaaf5c3e43d5f8faad4a8794cb987e9b03745c78dd919512183898dfbecd52e2408e43871fd021109117bd3ed4eaf8437743715d4ff465e43ff23d3f1b9dc7dfc04da8758184dbc966204796eccf0d6cf5e16500cc0201d048bcbbd899eeefc424164e33c201c2b010ca6b4d43a8a155cad8ecb279").unwrap();
+        let (rp, rd) = (key("8b19ac31d58b124c946209b5db1021b9"), key("55a2a2bca04cd32ff6f346bd0a0c1a3a"));
+        let auth = auth_value(None);
+        assert_eq!(auth, key("00000000000000000000000000000000"));
+        let p = prov_side(&ecdh, &inputs, &rp, &auth);
+        assert_eq!(p.confirmation_salt, key("5faabe187337c71cc6c973369dcaa79a"));
+        assert_eq!(p.confirmation_key, key("e31fe046c68ec339c425fc6629f0336f"));
+        assert_eq!(p.own_confirmation, key("b38a114dfdca1fe153bd2c1e0dc46ac2"));
+        let d = prov_side(&ecdh, &inputs, &rd, &auth);
+        assert_eq!(d.own_confirmation, key("eeba521c196b52cc2e37aa40329f554e"));
+        assert!(check_confirmation(&p, &d.own_confirmation, &rd, &auth));
+        let k = session_keys(&ecdh, &p.confirmation_salt, &rp, &rd);
+        assert_eq!(k.provisioning_salt, key("a21c7d45f201cf9489a2fb57145015b4"));
+        assert_eq!(k.session_key, key("c80253af86b33dfa450bbdb2a191fea3"));
+        assert_eq!(k.session_nonce.to_vec(), unhex("da7ddbe78b5f62b81d6847487e").unwrap());
+        assert_eq!(k.device_key, key("0520adad5e0142aa3e325087b4ec16d8"));
+        let data = provisioning_data(&key("efb2255e6422d330088e09bb015ed707"), 0x0567, 0x00, 0x0102_0304, 0x0b0c);
+        assert_eq!(data, unhex("efb2255e6422d330088e09bb015ed707056700010203040b0c").unwrap());
+        let enc = ccm_encrypt(&k.session_key, &k.session_nonce, &[], &data, 8);
+        assert_eq!(enc, unhex("d0bd7f4a89a2ff6222af59a90a60ad58acfe3123356f5cec2973e0ec50783b10c7").unwrap());
+    }
+
 }

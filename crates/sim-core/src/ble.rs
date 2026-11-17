@@ -450,6 +450,59 @@ pub fn simulate_adv_scan(p: &AdvScanParams) -> AdvScanTrace {
     trace
 }
 
+// ---------------------------------------------------------------------------------
+// Power: what one advertising event costs
+// ---------------------------------------------------------------------------------
+
+/// The interframe space: a reply starts 150 µs after the end of a packet.
+pub const T_IFS_S: f64 = 150e-6;
+
+/// An advertiser that sends one event (channels 37, 38, 39) per interval and sleeps
+/// in between.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AdvPower {
+    /// advInterval, seconds. The specification allows 20 ms to 10.24 s.
+    pub interval_s: f64,
+    /// Bytes of advertising data (0..=31 in legacy advertising).
+    pub data_bytes: usize,
+    /// Connectable advertising listens after each packet for a request or a connection.
+    pub connectable: bool,
+    pub tx_a: f64,
+    pub rx_a: f64,
+    pub sleep_a: f64,
+    /// Time to start the radio before each packet, drawn at the receive current.
+    pub ramp_s: f64,
+}
+
+impl AdvPower {
+    /// One legacy advertising packet on air at 1 Mbit/s: preamble 1, access address 4,
+    /// header 2, advertiser address 6, data, CRC 3 bytes - 8 µs per byte.
+    pub fn packet_s(&self) -> f64 {
+        (1 + 4 + 2 + 6 + self.data_bytes.min(31) + 3) as f64 * 8e-6
+    }
+
+    /// After a connectable packet the radio listens through the interframe space and for
+    /// the start of a reply (preamble and access address: 40 µs).
+    pub fn listen_s(&self) -> f64 {
+        if self.connectable { T_IFS_S + 40e-6 } else { 0.0 }
+    }
+
+    /// Charge of one event, coulombs: three times (ramp up, send, listen).
+    pub fn event_charge_c(&self) -> f64 {
+        3.0 * (self.ramp_s * self.rx_a + self.packet_s() * self.tx_a + self.listen_s() * self.rx_a)
+    }
+
+    /// Average current, amperes. Events come every advInterval plus advDelay, a random
+    /// 0 to 10 ms (5 ms on average).
+    pub fn average_a(&self) -> f64 {
+        self.event_charge_c() / (self.interval_s + 5e-3) + self.sleep_a
+    }
+
+    pub fn battery_life_s(&self, capacity_mah: f64) -> f64 {
+        capacity_mah * 3.6 / self.average_a()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -571,5 +624,22 @@ mod tests {
         // With the receiver off, nothing is heard.
         let deaf = simulate_adv_scan(&AdvScanParams { scan_window_ms: 0.0, ..p });
         assert!(deaf.first_heard_ms.is_none());
+    }
+
+    #[test]
+    fn advertising_power_budget() {
+        let p = AdvPower { interval_s: 0.1, data_bytes: 31, connectable: true, tx_a: 7.1e-3, rx_a: 6.5e-3, sleep_a: 1.6e-6, ramp_s: 140e-6 };
+        // 31 bytes of data: 47 bytes on air, 376 µs.
+        assert!((p.packet_s() - 376e-6).abs() < 1e-12);
+        // 3 x (140 µs x 6.5 mA + 376 µs x 7.1 mA + 190 µs x 6.5 mA) = 14.44 µC.
+        assert!((p.event_charge_c() - 14.4438e-6).abs() < 1e-9, "{}", p.event_charge_c());
+        // Every 105 ms on average: 137.6 µA + 1.6 µA sleep.
+        assert!((p.average_a() - 139.16e-6).abs() < 0.05e-6, "{}", p.average_a());
+        // A CR2032 (225 mAh): 1617 hours, about 67 days.
+        assert!((p.battery_life_s(225.0) / 86_400.0 - 67.4).abs() < 0.2);
+        // Once per second: 16 µA, about 1.6 years. Non-connectable saves the listening.
+        let slow = AdvPower { interval_s: 1.0, ..p };
+        assert!((slow.average_a() - 15.97e-6).abs() < 0.05e-6, "{}", slow.average_a());
+        assert!(AdvPower { connectable: false, ..p }.event_charge_c() < 0.75 * p.event_charge_c());
     }
 }

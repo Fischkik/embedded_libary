@@ -4,6 +4,20 @@ Embedded Lab is a learning tool: a library of live, editable simulations ("demos
 explain embedded systems to one person, each with a beginner-level explanation beside it.
 `README.md` describes the crates and how to run and test.
 
+## Status
+
+The job "build every planned demo" (2026-11-16 to 2026-11-17) is **finished**: 71 demos in 7
+learning paths, `planned()` is empty, `cargo test --workspace` passes (140 tests). `HANDOFF.md`
+keeps the record of that job: a note and the sources for each demo, and in section 6 what
+was not verified. Nothing of it is committed yet; the user commits.
+
+To register new demos, `tools/register_demo.py` still saves work. It adds the module line,
+the registry entry and the learning-path step, removes the title from `planned()`, and
+inserts glossary entries in alphabetical order:
+`python3 tools/register_demo.py <field_module> <path_id> "<demo-id>:<module>:<title>" <<< '{"term": "One sentence."}'`
+Afterwards put the learning path into a sensible teaching order by hand, and add the demo to
+the table in `README.md`.
+
 ## When the user asks "how does X work?"
 
 If X is an embedded-systems topic (radio, a protocol, a bus, something inside a
@@ -61,6 +75,13 @@ The user is new to embedded systems. Every demo and explanation must:
 - Put the source of the facts in the explanation's `refs`.
 - Microcontroller topics are generic ARM Cortex-M concept models: no vendor register names,
   no instruction-level emulation.
+- Inside an `egui::Grid`, text wraps letter by letter when a column gets squeezed. Add such
+  labels as `ui.add(egui::Label::new(text).extend())`.
+- Zephyr topics (the "Zephyr" section) are the exception: they describe that one RTOS and use
+  its real names (`k_sleep`, `CONFIG_TIMESLICING`). Take every rule from the Zephyr
+  documentation and quote it next to the code that implements it (see
+  `crates/sim-core/src/zephyr.rs`). Where the documentation is silent, read the kernel source,
+  and say in `leaves_out` that the behaviour comes from the source and may change.
 
 ## How to build a demo
 
@@ -144,6 +165,9 @@ What the framework gives you (`crates/lab-ui/src/`):
 | Slider with SI units | `widgets::si_slider(&mut v, range, "label", "Hz")` |
 | Titled group, live formula, OK/FAIL line | `widgets::group`, `widgets::formula`, `widgets::status` |
 | Play/pause/speed for animation | `widgets::Clock` — call `tick(ui, cx.dt)`, then `controls(ui)` |
+| Timeline with one labelled row per task/thread/signal | `plots::timeline(id, names, x_label, x_max)`, bars with `Polygon::new(name, plots::bar(..))`, colours explained with `widgets::key(ui, &[(colour, "text")])` |
+| Any other graph where a legend box would cover data | `plots::plot_bare(id, height)` plus `widgets::key` below it |
+| Picture made of boxes (memory, flash, block diagram) | paint it: `ui.allocate_exact_size`, then `ui.painter().rect_filled / text / arrow` - see `mcu/memory.rs`, `mcu/clocks.rs` |
 | Graphs | `plots::plot(id, height)`, `plots::line`, `plots::series`, `plots::digital` (square waveforms), `plots::bar` (Gantt bars) |
 | 2D picture from numbers | `heat::Heat` with `heat::diverging` (fields) or `heat::ramp` (levels) |
 | Packet bits and bytes | `bits::bit_strip` (clickable), `bits::field_legend`, `bits::hex_edit`, `bits::hex_row` |
@@ -207,7 +231,10 @@ you may remember. When unsure, read the source under
 - Give every slider a `.text("label")`, and link a `TextEdit` to its label with
   `.labelled_by(label.id)`, so the accessibility check passes.
 - The demo area scrolls vertically only. Use `ui.horizontal_wrapped` for rows of controls so
-  they wrap in narrow windows instead of being cut off.
+  they wrap in narrow windows instead of being cut off. **A slider does not wrap by itself**:
+  inside such a row, add it as `widgets::wrap(ui, "key", |ui| ui.add(slider).on_hover_text(..));`.
+  Otherwise it runs off the right edge and pulls every graph below it out of view with it.
+  In the screenshot, check that the right edge of each graph and its legend is visible.
 - Give plots with a long y-axis label a height of at least about 180.
 - Object ids in a scene must come from a stable key, not the list index, or deleting an item
   moves the drag to its neighbour.
@@ -215,6 +242,26 @@ you may remember. When unsure, read the source under
 - Under WSL the window needs the Vulkan backend; `main.rs` selects it automatically.
 - The first full build takes over ten minutes on this machine. Later builds take seconds.
   Changing features of the GUI crates triggers the long build again, so avoid it.
+
+- **Compute every number that appears in explanation text**; do not estimate. When an
+  experiment promises an outcome ("the weak target is lost", "4 dB higher"), add a test in
+  the demo file that applies the preset and checks it (see `radar/cfar.rs`). Random data can
+  make a claim true for one seed and false for another.
+- **Plot invented example values and check they are plausible.** A first set of sleep-state
+  numbers once made the deepest sleep state cost more than the lighter one.
+- **A preset must stay inside the slider's range**, or the slider silently clamps it and the
+  experiment shows something else.
+- **Painter text on a filled box**: use `ui.visuals().strong_text_color()`; `pal.text` is too
+  dim there.
+- **`painter.arrow`** draws a head a quarter of the arrow's length. For long arrows draw a
+  line plus a short arrow at its end (see `firmware/state_machine.rs`).
+- **Monospace boxes** (`widgets::formula`) wrap at about 95 characters in the screenshot
+  width. Keep formula lines shorter.
+- **Only the top 950 pixels are in the screenshot.** `HANDOFF.md` section 5 has a one-off
+  test that takes a taller one.
+- **Long specification pages** (Bluetooth Core, Mesh Protocol): WebFetch reads only about
+  the first 450 000 characters. Download the page with curl into the scratchpad and strip
+  the tags with Python to reach later sections.
 
 ## Other conventions
 

@@ -6,6 +6,7 @@
 use crate::dsp::{C64, fft, hann};
 use crate::rng::Rng;
 use crate::units::{C, db_amp};
+use std::f64::consts::{PI, TAU};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Target {
@@ -179,6 +180,201 @@ pub fn argmax<T: PartialOrd + Copy>(v: &[T]) -> usize {
     best
 }
 
+// ---------------------------------------------------------------------------------
+// Angle of arrival with two receive antennas
+// ---------------------------------------------------------------------------------
+
+/// Wrap an angle into (-pi, pi]: a phase meter cannot tell 30 degrees from 390.
+pub fn wrap_pi(x: f64) -> f64 {
+    let y = (x + PI).rem_euclid(TAU) - PI;
+    if y <= -PI { y + TAU } else { y }
+}
+
+/// Phase difference between two receive antennas `spacing_m` apart for an echo arriving at
+/// `theta` from straight ahead: the far antenna's path is longer by `d sin(theta)`, so
+/// `dphi = 2 pi d sin(theta) / lambda`. Not wrapped.
+pub fn aoa_phase(spacing_m: f64, theta_rad: f64, lambda_m: f64) -> f64 {
+    TAU * spacing_m * theta_rad.sin() / lambda_m
+}
+
+/// The angle a receiver computes from a measured phase difference: `asin(dphi lambda / (2 pi d))`.
+/// `None` when no angle produces that phase (possible only for spacings over lambda / 2).
+pub fn aoa_angle(phase_rad: f64, spacing_m: f64, lambda_m: f64) -> Option<f64> {
+    let s = phase_rad * lambda_m / (TAU * spacing_m);
+    (s.abs() <= 1.0).then(|| s.asin())
+}
+
+/// Half-width of the field of view inside which the angle is unambiguous: the measured phase
+/// stays within +-pi as long as `|sin(theta)| <= lambda / (2 d)`. 90 degrees for d <= lambda/2.
+pub fn aoa_unambiguous_rad(spacing_m: f64, lambda_m: f64) -> f64 {
+    (lambda_m / (2.0 * spacing_m)).min(1.0).asin()
+}
+
+/// `n` angle estimates of a target at `theta`, each from a phase measurement disturbed by
+/// Gaussian noise of `noise_rad` rms.
+pub fn aoa_estimates(theta_rad: f64, spacing_m: f64, lambda_m: f64, noise_rad: f64, n: usize, rng: &mut Rng) -> Vec<Option<f64>> {
+    (0..n).map(|_| aoa_angle(wrap_pi(aoa_phase(spacing_m, theta_rad, lambda_m) + noise_rad * rng.gauss()), spacing_m, lambda_m)).collect()
+}
+
+// ---------------------------------------------------------------------------------
+// Presence: a still person's breathing seen in the phase of the echo
+// ---------------------------------------------------------------------------------
+
+pub const PRESENCE_FS: f64 = 16.0;
+pub const PRESENCE_N: usize = 512;
+/// A breathing peak counts as "someone is there" above this level (1 rad amplitude = 0 dB).
+pub const PRESENCE_THRESHOLD_DB: f64 = -20.0;
+/// Breathing rates searched for, per minute.
+pub const BREATHING_BAND_PER_MIN: (f64, f64) = (6.0, 40.0);
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Presence {
+    pub f0_hz: f64,
+    pub person: bool,
+    pub breaths_per_min: f64,
+    /// Peak-to-peak chest movement from breathing.
+    pub chest_mm: f64,
+    pub beats_per_min: f64,
+    /// Peak-to-peak movement of the chest wall from the heartbeat.
+    pub heart_mm: f64,
+    /// Receiver noise relative to the echo (amplitude 1), per I and Q.
+    pub noise: f64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PresenceTrace {
+    pub t: Vec<f64>,
+    pub displacement_mm: Vec<f64>,
+    /// Phase of the echo, unwrapped, minus its average.
+    pub phase_rad: Vec<f64>,
+    /// Spectrum of the phase: `[per minute, dB]`, 1 rad amplitude = 0 dB.
+    pub spectrum: Vec<[f64; 2]>,
+    /// Strongest peak inside the breathing band.
+    pub breathing_peak: [f64; 2],
+}
+
+impl Presence {
+    /// The echo of one reflecting point (the chest, or the empty chair) is
+    /// `exp(-j 4 pi (R + x) / lambda)`: moving by x changes the two-way path by 2x.
+    pub fn simulate(&self, seed: u64) -> PresenceTrace {
+        let lambda = C / self.f0_hz;
+        let mut rng = Rng::new(seed);
+        let mut tr = PresenceTrace::default();
+        let (mut prev, mut acc) = (0.0, 0.0);
+        for i in 0..PRESENCE_N {
+            let t = i as f64 / PRESENCE_FS;
+            let x_mm = if self.person {
+                self.chest_mm / 2.0 * (TAU * self.breaths_per_min / 60.0 * t).sin() + self.heart_mm / 2.0 * (TAU * self.beats_per_min / 60.0 * t).sin()
+            } else {
+                0.0
+            };
+            let echo = C64::from_polar(1.0, -2.0 * TAU * x_mm * 1e-3 / lambda) + C64::new(rng.gauss(), rng.gauss()) * self.noise;
+            let ph = echo.arg();
+            acc += if i == 0 { ph } else { wrap_pi(ph - prev) };
+            prev = ph;
+            tr.t.push(t);
+            tr.displacement_mm.push(x_mm);
+            tr.phase_rad.push(acc);
+        }
+        let mean = tr.phase_rad.iter().sum::<f64>() / PRESENCE_N as f64;
+        tr.phase_rad.iter_mut().for_each(|p| *p -= mean);
+        tr.spectrum = crate::dsp::spectrum_real(&tr.phase_rad, PRESENCE_FS).into_iter().map(|[f, db]| [f * 60.0, db]).collect();
+        let band: Vec<[f64; 2]> = tr.spectrum.iter().copied().filter(|p| (BREATHING_BAND_PER_MIN.0..=BREATHING_BAND_PER_MIN.1).contains(&p[0])).collect();
+        tr.breathing_peak = crate::dsp::peak(&band);
+        tr
+    }
+}
+
+// ---------------------------------------------------------------------------------
+// Detection thresholds: cell-averaging CFAR
+// ---------------------------------------------------------------------------------
+
+/// Threshold factor of cell-averaging CFAR for `n` training cells. With noise power that is
+/// exponentially distributed (the output of a square-law detector on Gaussian noise) and the
+/// threshold `alpha x mean of the n cells`, the false alarm probability is
+/// `(1 + alpha / n)^(-n)`; solved for alpha: `n (Pfa^(-1/n) - 1)`.
+pub fn cfar_alpha(n: usize, pfa: f64) -> f64 {
+    n as f64 * (pfa.powf(-1.0 / n as f64) - 1.0)
+}
+
+/// CA-CFAR threshold for every cell: `train` cells on each side, skipping `guard` cells next
+/// to the cell under test. Near the ends only the cells that exist are used, with alpha for
+/// their number.
+pub fn ca_cfar(power: &[f64], train: usize, guard: usize, pfa: f64) -> Vec<f64> {
+    let n = power.len();
+    (0..n)
+        .map(|i| {
+            let lo = i.saturating_sub(guard + train)..i.saturating_sub(guard);
+            let hi = (i + guard + 1).min(n)..(i + guard + 1 + train).min(n);
+            let cells: Vec<f64> = power[lo].iter().chain(&power[hi]).copied().collect();
+            if cells.is_empty() {
+                return f64::INFINITY;
+            }
+            cfar_alpha(cells.len(), pfa) * cells.iter().sum::<f64>() / cells.len() as f64
+        })
+        .collect()
+}
+
+/// A range profile: received power per range cell, noise power 1 on average, an area of
+/// extra clutter, and point targets given as (cell, signal-to-noise ratio in dB).
+#[derive(Clone, Debug, PartialEq)]
+pub struct CfarScene {
+    pub cells: usize,
+    pub clutter_db: f64,
+    pub clutter_cells: (usize, usize),
+    pub targets: Vec<(usize, f64)>,
+}
+
+impl CfarScene {
+    pub fn profile(&self, seed: u64) -> Vec<f64> {
+        let mut rng = Rng::new(seed);
+        let clutter = 10f64.powf(self.clutter_db / 10.0);
+        (0..self.cells)
+            .map(|i| {
+                let floor = if (self.clutter_cells.0..self.clutter_cells.1).contains(&i) { 1.0 + clutter } else { 1.0 };
+                let mut v = C64::new(rng.gauss(), rng.gauss()) * (floor / 2.0).sqrt();
+                for &(cell, snr_db) in &self.targets {
+                    if cell == i {
+                        v += C64::from_polar(10f64.powf(snr_db / 20.0), TAU * rng.f64());
+                    }
+                }
+                v.norm_sqr()
+            })
+            .collect()
+    }
+}
+
+// ---------------------------------------------------------------------------------
+// Radar versus PIR: a CW Doppler motion sensor watching the same walk as the PIR model
+// ---------------------------------------------------------------------------------
+
+/// The motion sensor's filter removes Doppler frequencies below this (the echo of
+/// everything that stands still is at 0 Hz).
+pub const MOTION_HIGHPASS_HZ: f64 = 5.0;
+/// Distance at which a walking person gives motion level 1.
+pub const MOTION_REF_M: f64 = 5.0;
+pub const MOTION_THRESHOLD: f64 = 0.15;
+
+/// Per time step of the PIR model: `[t, Doppler frequency, motion level]`. The echo's
+/// amplitude falls with the square of the distance (its power with the fourth power) and is
+/// multiplied by `transmission` (amplitude) for an obstacle in the way; the high-pass then
+/// weakens slow Doppler frequencies. Only the speed towards or away from the sensor counts.
+pub fn doppler_motion(scene: &crate::signals::PirScene, f0_hz: f64, transmission: f64) -> Vec<[f64; 3]> {
+    use crate::signals::{PIR_RATE_HZ, PIR_SECONDS};
+    let (dx, dy) = (scene.heading_deg.to_radians().cos(), scene.heading_deg.to_radians().sin());
+    (0..(PIR_SECONDS * PIR_RATE_HZ) as usize)
+        .map(|i| {
+            let t = i as f64 / PIR_RATE_HZ;
+            let (x, y) = (scene.start.0 + dx * scene.speed_mps * t, scene.start.1 + dy * scene.speed_mps * t);
+            let r = (x * x + y * y).sqrt().max(0.5);
+            let approach = -(x * dx + y * dy) * scene.speed_mps / r;
+            let f = doppler_hz(approach, f0_hz);
+            let level = transmission * (MOTION_REF_M / r).powi(2) * f.abs() / (f * f + MOTION_HIGHPASS_HZ * MOTION_HIGHPASS_HZ).sqrt();
+            [t, f, level]
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,4 +432,81 @@ mod tests {
             assert!((got - v).abs() <= 1.5 * r.velocity_resolution(64), "v={v} got {got}");
         }
     }
+    #[test]
+    fn angle_of_arrival() {
+        let lambda = C / 24.125e9;
+        // Half a wavelength apart, 30 degrees: a quarter turn of phase.
+        assert!((aoa_phase(lambda / 2.0, 30f64.to_radians(), lambda) - PI / 2.0).abs() < 1e-12);
+        // Up to lambda/2 every angle comes back exactly.
+        for deg in (-89..=89).step_by(7) {
+            let th = (deg as f64).to_radians();
+            let back = aoa_angle(wrap_pi(aoa_phase(lambda / 2.0, th, lambda)), lambda / 2.0, lambda).unwrap();
+            assert!((back - th).abs() < 1e-9, "{deg}");
+        }
+        // One wavelength apart: unambiguous only to +-30 degrees; 40 degrees reads as -20.93.
+        assert!((aoa_unambiguous_rad(lambda, lambda).to_degrees() - 30.0).abs() < 1e-9);
+        let ghost = aoa_angle(wrap_pi(aoa_phase(lambda, 40f64.to_radians(), lambda)), lambda, lambda).unwrap().to_degrees();
+        assert!((ghost + 20.93).abs() < 0.01, "{ghost}");
+        // Wider spacing: the same phase noise gives a smaller angle error.
+        let spread = |d: f64| {
+            let e = aoa_estimates(0.0, d, lambda, 0.1, 400, &mut Rng::new(3));
+            (e.iter().map(|a| a.unwrap().powi(2)).sum::<f64>() / 400.0).sqrt()
+        };
+        assert!(spread(lambda) < 0.6 * spread(lambda / 2.0));
+        assert_eq!(wrap_pi(3.0 * PI), PI);
+    }
+
+    #[test]
+    fn breathing_shows_in_the_phase() {
+        let p = Presence { f0_hz: 24.125e9, person: true, breaths_per_min: 15.0, chest_mm: 4.0, beats_per_min: 72.0, heart_mm: 0.0, noise: 0.02 };
+        let tr = p.simulate(1);
+        // 4 mm peak to peak at 24 GHz: 4 pi x 4 mm / 12.4 mm = 4.04 rad peak to peak.
+        let (lo, hi) = tr.phase_rad.iter().fold((f64::MAX, f64::MIN), |(a, b), v| (a.min(*v), b.max(*v)));
+        assert!((hi - lo - 4.04).abs() < 0.15, "{}", hi - lo);
+        assert!((tr.breathing_peak[0] - 15.0).abs() < 1.0, "{:?}", tr.breathing_peak);
+        assert!(tr.breathing_peak[1] > PRESENCE_THRESHOLD_DB);
+        // The empty room: nothing in the breathing band.
+        let empty = Presence { person: false, ..p }.simulate(1);
+        assert!(empty.breathing_peak[1] < PRESENCE_THRESHOLD_DB, "{:?}", empty.breathing_peak);
+        // The heartbeat adds a second, smaller peak.
+        let heart = Presence { heart_mm: 0.4, ..p }.simulate(1);
+        let at = |tr: &PresenceTrace, f: f64| tr.spectrum.iter().filter(|q| (q[0] - f).abs() < 1.5).fold(f64::MIN, |m, q| m.max(q[1]));
+        assert!(at(&heart, 72.0) > at(&tr, 72.0) + 20.0);
+    }
+
+    #[test]
+    fn cfar_keeps_its_false_alarm_rate() {
+        assert!((cfar_alpha(16, 1e-4) - 12.45).abs() < 0.01);
+        assert!((cfar_alpha(20, 1e-3) - 8.25).abs() < 0.01);
+        // Pure noise, one target-free profile of 200 000 cells: measured rate near Pfa.
+        let scene = CfarScene { cells: 200_000, clutter_db: 0.0, clutter_cells: (0, 0), targets: vec![] };
+        let p = scene.profile(7);
+        let th = ca_cfar(&p, 8, 2, 1e-2);
+        let rate = p.iter().zip(&th).filter(|(v, t)| v > t).count() as f64 / p.len() as f64;
+        assert!((rate / 1e-2 - 1.0).abs() < 0.1, "{rate}");
+        // A clutter area 15 dB up: a fixed threshold set for Pfa 1e-2 on plain noise
+        // (ln 100 = 4.6) fires everywhere in it; CFAR does not.
+        let cl = CfarScene { cells: 2000, clutter_db: 15.0, clutter_cells: (500, 1500), targets: vec![] };
+        let p = cl.profile(9);
+        let fixed = p[600..1400].iter().filter(|v| **v > 100f64.ln()).count();
+        let th = ca_cfar(&p, 8, 2, 1e-2);
+        let adaptive = (600..1400).filter(|&i| p[i] > th[i]).count();
+        assert!(fixed > 500 && adaptive < 25, "{fixed} {adaptive}");
+    }
+
+    #[test]
+    fn doppler_motion_sees_approach_best() {
+        use crate::signals::PirScene;
+        let walk = PirScene { start: (-4.0, 5.0), heading_deg: 0.0, speed_mps: 1.0, zone_pitch_deg: 6.0, draught: 0.0, single_element: false };
+        let towards = PirScene { start: (0.0, 9.0), heading_deg: -90.0, speed_mps: 0.6, ..walk };
+        let m = doppler_motion(&towards, 24.125e9, 1.0);
+        // Straight towards the sensor: the full speed is radial, 0.6 m/s -> 96.6 Hz.
+        assert!((m[0][1] - doppler_hz(0.6, 24.125e9)).abs() < 1e-9);
+        assert!(m.iter().all(|s| s[2] > MOTION_THRESHOLD));
+        // Across: no radial speed straight in front of the sensor.
+        let across = doppler_motion(&walk, 24.125e9, 1.0);
+        let mid = across.iter().min_by(|a, b| a[1].abs().total_cmp(&b[1].abs())).unwrap();
+        assert!(mid[2] < MOTION_THRESHOLD, "{mid:?}");
+    }
+
 }

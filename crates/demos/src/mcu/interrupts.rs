@@ -29,9 +29,9 @@ impl Demo for Interrupts {
                 ui.push_id(i, |ui| {
                     ui.horizontal_wrapped(|ui| {
                         ui.checkbox(&mut s.enabled, RichText::new(s.name.as_str()).color(pal.trace[(i + 1) % 6]).strong());
-                        ui.add(egui::Slider::new(&mut s.priority, 0..=7).text("priority")).on_hover_text("Lower number = more urgent (this is how ARM Cortex-M counts).");
-                        ui.add(egui::Slider::new(&mut s.period_us, 50.0..=2000.0).logarithmic(true).text("period").suffix(" µs").fixed_decimals(0)).on_hover_text("How often this interrupt is requested.");
-                        ui.add(egui::Slider::new(&mut s.handler_us, 2.0..=600.0).logarithmic(true).text("handler time").suffix(" µs").fixed_decimals(0)).on_hover_text("How long its handler function takes.");
+                        widgets::wrap(ui, "priority", |ui| ui.add(egui::Slider::new(&mut s.priority, 0..=7).text("priority")).on_hover_text("Lower number = more urgent (this is how ARM Cortex-M counts)."));
+                        widgets::wrap(ui, "period", |ui| ui.add(egui::Slider::new(&mut s.period_us, 50.0..=2000.0).logarithmic(true).text("period").suffix(" µs").fixed_decimals(0)).on_hover_text("How often this interrupt is requested."));
+                        widgets::wrap(ui, "handler", |ui| ui.add(egui::Slider::new(&mut s.handler_us, 2.0..=600.0).logarithmic(true).text("handler time").suffix(" µs").fixed_decimals(0)).on_hover_text("How long its handler function takes."));
                     });
                 });
             }
@@ -45,7 +45,7 @@ impl Demo for Interrupts {
         ui.label(RichText::new("What the processor is doing, for 2 milliseconds").strong());
         let lanes = self.sources.len();
         let names: Vec<String> = std::iter::once("main loop".to_owned()).chain(self.sources.iter().map(|s| s.name.clone())).collect();
-        plots::plot("gantt", 90.0 + 60.0 * lanes as f32)
+        plots::plot_bare("gantt", 90.0 + 60.0 * lanes as f32)
             .x_axis_label("time [µs]")
             .include_x(0.0)
             .include_x(DURATION_US)
@@ -70,6 +70,17 @@ impl Demo for Interrupts {
                 p.points(Points::new("interrupt requested", marks(false)).shape(egui_plot::MarkerShape::Down).radius(4.5).color(pal.text));
                 p.points(Points::new("request lost", marks(true)).shape(egui_plot::MarkerShape::Cross).radius(6.0).color(pal.bad));
             });
+
+        widgets::key(
+            ui,
+            &[
+                (pal.trace[1], "coloured bar: handler running"),
+                (pal.dim, "grey bar: main loop running"),
+                (pal.text.gamma_multiply(0.6), "pale sliver: saving / restoring registers"),
+                (pal.text, "triangle: interrupt requested"),
+                (pal.bad, "cross: request lost"),
+            ],
+        );
 
         widgets::group(ui, "How each interrupt fared", |ui| {
             egui::Grid::new("stats").striped(true).num_columns(4).show(ui, |ui| {

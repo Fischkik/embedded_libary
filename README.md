@@ -16,13 +16,19 @@ window there. To choose another backend, set `WGPU_BACKEND` (`vulkan` or `gl`).
 
 ## What is in it
 
-Three learning paths, 15 demos:
+Seven learning paths, 71 demos:
 
 | Path | Demos |
 |---|---|
-| From radio wave to mesh message | What is a radio wave · Waves in space · Spectrum · Modulation · Anatomy of a BLE advertising packet · Advertising and scanning in time · A BLE connection: hopping · Bluetooth Mesh: how a message spreads · Inside a mesh packet |
-| Radar: seeing with radio | (the first three above) · Doppler radar · FMCW radar · Range-Doppler map |
-| Inside the microcontroller | A pin and a bouncing button · Timers and PWM · Interrupts and priorities |
+| From radio wave to mesh message | What is a radio wave · Waves in space · Spectrum · Modulation · Anatomy of a BLE advertising packet · Advertising and scanning in time · A BLE connection: hopping · Bluetooth Mesh: how a message spreads · Inside a mesh packet · Antennas and radiation patterns · Link budget: power, distance, sensitivity · The 2.4 GHz band and its neighbours · GATT: services and characteristics · Pairing and encryption · Power: how long does the battery last? · Addresses, publish and subscribe · Segmented messages · Friends and low power nodes · Provisioning a new device · Replay protection and the IV index |
+| Radar: seeing with radio | (the first three above) · Doppler radar · FMCW radar · Range-Doppler map · Detection thresholds (CFAR) · Angle of arrival with two antennas · Presence detection: breathing and micro-motion · Radar versus PIR sensors |
+| Inside the microcontroller | A pin and a bouncing button · Clock sources and the clock tree · Timers and PWM · ADC: measuring a voltage · Interrupts and priorities · DMA · Memory map, stack and heap · RTOS: tasks and scheduling · Priority inversion · Watchdog · Sleep modes and battery life · Boot, bootloader and firmware update |
+| Zephyr: a real-time operating system in practice | Interrupts and priorities · RTOS: tasks and scheduling (both from the path above) · Devicetree · Kconfig · Zephyr threads: who runs when · Semaphores: an interrupt wakes a thread · Message queues · Work queues · Interrupts in Zephyr · Kernel timers and the system tick · From reset to main() · Power management · Device drivers · Logging · Bluetooth in Zephyr |
+| Wired buses | UART: bytes on a wire · SPI · I2C · RS-485 · CAN · DALI lighting bus · USB basics |
+| Signals and analog | Sampling and aliasing · Noise and averaging · Digital filters · PLL: making frequencies · Op-amp circuits · PIR sensor front end · Switching power supplies |
+| Firmware craft | State machines · Ring buffers · Fixed-point arithmetic · Checksums and CRCs · Debugging with a logic analyzer |
+
+Every planned topic is built. To plan a new one, add its title to `planned()` in `crates/demos/src/lib.rs`; it then shows greyed out in the library.
 
 "All topics" in the library panel shows the same demos as a tree, together with the planned
 ones (greyed out).

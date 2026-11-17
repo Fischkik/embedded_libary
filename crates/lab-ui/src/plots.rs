@@ -7,12 +7,35 @@ use egui_plot::{Legend, Line, Plot, PlotPoints};
 /// (so the page can still be scrolled), drag to pan, ctrl+scroll or right-drag to zoom,
 /// double-click to reset.
 pub fn plot<'a>(id: &str, height: f32) -> Plot<'a> {
+    plot_bare(id, height).legend(Legend::default())
+}
+
+/// The same plot without a legend, for pictures where a legend box would cover data
+/// (timelines filled edge to edge). Explain the colours with `widgets::key` below it.
+pub fn plot_bare<'a>(id: &str, height: f32) -> Plot<'a> {
     Plot::new(id.to_owned())
         .height(height)
-        .legend(Legend::default())
         .allow_scroll(false)
         .show_axes([true, true])
         .set_margin_fraction(egui::vec2(0.02, 0.08))
+}
+
+/// A timeline with one labelled row per name: row 0 at the bottom, row `i` centred on
+/// `y = i`. Draw into it with `Polygon`s made by [`bar`]. It has no legend (see
+/// [`plot_bare`]); explain the colours with `widgets::key`.
+pub fn timeline<'a>(id: &str, names: Vec<String>, x_label: &str, x_max: f64) -> Plot<'a> {
+    let rows = names.len();
+    plot_bare(id, 70.0 + 46.0 * rows as f32)
+        .x_axis_label(x_label.to_owned())
+        .include_x(0.0)
+        .include_x(x_max)
+        .include_y(-0.6)
+        .include_y(rows as f64 - 0.4)
+        .y_grid_spacer(egui_plot::uniform_grid_spacer(|_| [1.0, 1.0, 1.0]))
+        .y_axis_formatter(move |mark, _| {
+            let i = mark.value.round();
+            if (mark.value - i).abs() < 0.01 && i >= 0.0 { names.get(i as usize).cloned().unwrap_or_default() } else { String::new() }
+        })
 }
 
 /// A named line from `[x, y]` points.
