@@ -145,11 +145,10 @@ pub fn simulate(threads: &[Thread], slicing: Slicing, duration_ms: f64) -> Trace
             _ => best,
         };
         if next != current {
-            if let Some(c) = current {
-                if st[c].ready && !yielded {
+            if let Some(c) = current
+                && st[c].ready && !yielded {
                     trace.stats[c].preempted += 1;
                 }
-            }
             if let Some(i) = next {
                 trace.stats[i].runs += 1;
             }
@@ -157,11 +156,10 @@ pub fn simulate(threads: &[Thread], slicing: Slicing, duration_ms: f64) -> Trace
             current = next;
         }
         yielded = false;
-        if let Some(c) = current {
-            if let Some(since) = st[c].ready_since.take() {
+        if let Some(c) = current
+            && let Some(since) = st[c].ready_since.take() {
                 trace.stats[c].worst_wait_ms = trace.stats[c].worst_wait_ms.max(t - since);
             }
-        }
         // 3. Run until the next thing happens: a wake-up, the end of the work, or the
         //    end of the time slice.
         let mut dt = st.iter().map(|s| s.wake_at).fold(duration_ms, f64::min) - t;
@@ -539,14 +537,13 @@ pub fn simulate_msgq(s: &MsgqScenario, duration_ms: f64, inspect_ms: f64) -> Msg
         }
         // Consumer.
         busy_left = (busy_left - 1).max(0);
-        if busy_left == 0 {
-            if let Some((id, made)) = queue.pop_front() {
+        if busy_left == 0
+            && let Some((id, made)) = queue.pop_front() {
                 busy_left = ticks(s.work_ms);
                 tr.working.push((id, t, t + busy_left as f64 * TICK));
                 tr.delivered += 1;
                 tr.worst_latency_ms = tr.worst_latency_ms.max((k - made) as f64 * TICK);
             }
-        }
         // A blocked producer gets the space that has become free.
         while queue.len() < s.capacity.max(1) {
             match waiting.pop_front() {
@@ -630,14 +627,13 @@ pub fn simulate_workqueue(items: &[WorkItem], duration_ms: f64) -> WorkTrace {
             }
         }
         busy_left = (busy_left - 1).max(0);
-        if busy_left == 0 {
-            if let Some((i, submitted)) = queue.pop_front() {
+        if busy_left == 0
+            && let Some((i, submitted)) = queue.pop_front() {
                 busy_left = ticks(items[i].handler_ms);
                 tr.running.push((i, t, t + busy_left as f64 * TICK));
                 tr.runs[i] += 1;
                 tr.worst_delay_ms[i] = tr.worst_delay_ms[i].max((k - submitted) as f64 * TICK);
             }
-        }
         if busy_left > 0 {
             busy += 1;
         }

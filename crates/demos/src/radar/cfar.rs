@@ -98,10 +98,9 @@ impl Demo for RadarCfar {
             ui,
             format!(
                 "threshold = alpha x average of the {n} training cells\n\
-                 alpha = N x (Pfa^(-1/N) - 1) = {n} x ({}^(-1/{n}) - 1) = {:.2} = {:.1} dB\n\
+                 alpha = N x (Pfa^(-1/N) - 1) = {n} x ({pfa:.0e}^(-1/{n}) - 1) = {:.2} = {:.1} dB\n\
                  CFAR:  {} of 4 targets found, {} false alarm(s)\n\
                  fixed: {} of 4 targets found, {} false alarm(s)",
-                format!("{pfa:.0e}"),
                 cfar_alpha(n, pfa),
                 db(cfar_alpha(n, pfa)),
                 a.found.len(),

@@ -86,11 +86,15 @@ impl Demo for MeshPdu {
                 ui.label("Tell the lamp to switch");
                 ui.selectable_value(&mut self.on, true, "ON");
                 ui.selectable_value(&mut self.on, false, "OFF");
-                ui.add(egui::Slider::new(&mut self.ttl, 0..=127).text("TTL")).on_hover_text(mesh::ttl_meaning(self.ttl));
+                widgets::wrap(ui, "TTL", |ui| ui.add(egui::Slider::new(&mut self.ttl, 0..=127).text("TTL")).on_hover_text(mesh::ttl_meaning(self.ttl)));
             });
             ui.horizontal_wrapped(|ui| {
-                ui.add(egui::Slider::new(&mut self.src, 1..=0x7FFF).hexadecimal(4, false, false).text("sender address")).on_hover_text("Unicast address of the sending node (0001 to 7fff).");
-                ui.add(egui::Slider::new(&mut self.dst, 1..=0xFFFF).hexadecimal(4, false, false).text("destination address")).on_hover_text(mesh::address_kind(self.dst));
+                widgets::wrap(ui, "sender", |ui| {
+                    ui.add(egui::Slider::new(&mut self.src, 1..=0x7FFF).hexadecimal(4, false, false).text("sender address")).on_hover_text("Unicast address of the sending node (0001 to 7fff).")
+                });
+                widgets::wrap(ui, "destination", |ui| {
+                    ui.add(egui::Slider::new(&mut self.dst, 1..=0xFFFF).hexadecimal(4, false, false).text("destination address")).on_hover_text(mesh::address_kind(self.dst))
+                });
             });
             ui.label(RichText::new(format!("destination {:04x} is: {}", self.dst, mesh::address_kind(self.dst))).small().color(pal.dim));
             ui.add(egui::Slider::new(&mut self.seq, 0..=0xFF_FFFF).logarithmic(true).text("sequence number"))

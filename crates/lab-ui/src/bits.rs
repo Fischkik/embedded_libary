@@ -106,14 +106,12 @@ pub fn hex_edit(ui: &mut Ui, label: &str, text: &mut String, bytes: &mut Vec<u8>
         .add(egui::TextEdit::singleline(text).font(egui::TextStyle::Monospace).desired_width(f32::INFINITY))
         .labelled_by(label_response.id);
     let parsed = sim_core::units::unhex(text);
-    if response.changed() {
-        if let Some(b) = &parsed {
-            if b.len() <= max_len {
+    if response.changed()
+        && let Some(b) = &parsed
+            && b.len() <= max_len {
                 *bytes = b.clone();
                 changed = true;
             }
-        }
-    }
     match parsed {
         None => {
             ui.label(RichText::new("Not valid hex: use pairs of 0-9 and a-f, e.g. 02 01 06. Showing the last valid value.").color(pal.bad).small());

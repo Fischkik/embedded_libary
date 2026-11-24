@@ -51,9 +51,11 @@ impl Demo for Modulation {
                 .on_hover_text("How far the frequency moves away from the centre for a 1 or a 0. Bluetooth LE: about 250 kHz.");
             ui.add_enabled(self.scheme == Scheme::Gfsk, egui::Slider::new(&mut self.bt, 0.2..=1.0).text("smoothing (BT)").fixed_decimals(2))
                 .on_hover_text("Smaller = smoother transitions = narrower signal, but neighbouring bits blur into each other. Bluetooth LE: 0.5.");
-            ui.horizontal(|ui| {
-                ui.add(egui::Slider::new(&mut self.snr_db, -5.0..=30.0).text("signal-to-noise ratio").suffix(" dB").fixed_decimals(0))
-                    .on_hover_text("How much stronger the signal is than the noise at the receiver. Lower = longer distance or more interference.");
+            ui.horizontal_wrapped(|ui| {
+                widgets::wrap(ui, "snr", |ui| {
+                    ui.add(egui::Slider::new(&mut self.snr_db, -5.0..=30.0).text("signal-to-noise ratio").suffix(" dB").fixed_decimals(0))
+                        .on_hover_text("How much stronger the signal is than the noise at the receiver. Lower = longer distance or more interference.")
+                });
                 if ui.button("New noise").on_hover_text("Roll the dice again for the random noise").clicked() {
                     self.seed += 1;
                 }

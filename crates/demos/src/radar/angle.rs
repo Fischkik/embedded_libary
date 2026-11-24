@@ -69,14 +69,13 @@ impl Demo for RadarAngle {
                 let end = RADAR + vec2((4.5 * e.sin()) as f32, -(4.5 * e.cos()) as f32);
                 s.painter.line_segment([s.pos(RADAR), s.pos(end)], (1.0, pal.trace[1].gamma_multiply(0.35)));
             }
-            if let Some(e) = estimate {
-                if (e - theta).abs() > 1f64.to_radians() {
+            if let Some(e) = estimate
+                && (e - theta).abs() > 1f64.to_radians() {
                     let end = RADAR + vec2((5.0 * e.sin()) as f32, -(5.0 * e.cos()) as f32);
                     s.painter.line_segment([s.pos(RADAR), s.pos(end)], (2.0, pal.bad));
                     let ghost = RADAR + (end - RADAR).normalized() * (self.target - RADAR).length();
                     s.painter.circle_stroke(s.pos(ghost), 8.0, (2.0, pal.bad));
                 }
-            }
             s.painter.line_segment([s.pos(RADAR), s.pos(self.target)], (1.5, pal.trace[2]));
             let half = (0.08 * self.spacing_wl) as f32;
             for x in [-half, half] {

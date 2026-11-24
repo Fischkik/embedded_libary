@@ -49,9 +49,11 @@ impl Demo for BleAdvertising {
                 .on_hover_text("How often the scanner starts listening. It moves to the next advertising channel each time.");
             ui.add(egui::Slider::new(&mut self.scan_window_ms, 0.0..=self.scan_interval_ms).text("scan window").suffix(" ms").fixed_decimals(0))
                 .on_hover_text("How long it listens each time. Window = interval means listening all the time, which only mains-powered devices can afford.");
-            ui.horizontal(|ui| {
-                ui.add(egui::Slider::new(&mut self.scan_offset_ms, 0.0..=300.0).text("scanner starts later by").suffix(" ms").fixed_decimals(0))
-                    .on_hover_text("The two devices do not share a clock. This slides the scanner's schedule against the advertiser's.");
+            ui.horizontal_wrapped(|ui| {
+                widgets::wrap(ui, "offset", |ui| {
+                    ui.add(egui::Slider::new(&mut self.scan_offset_ms, 0.0..=300.0).text("scanner starts later by").suffix(" ms").fixed_decimals(0))
+                        .on_hover_text("The two devices do not share a clock. This slides the scanner's schedule against the advertiser's.")
+                });
                 if ui.button("Roll again").on_hover_text("New random delays (the 0 to 10 ms the advertiser adds to every interval)").clicked() {
                     self.seed += 1;
                 }

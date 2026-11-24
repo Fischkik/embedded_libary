@@ -443,7 +443,7 @@ pub fn segment(upper: &[u8], akf: bool, aid: u8, szmic: bool, seq: u32) -> Optio
     if n > MAX_SEGMENTS {
         return None;
     }
-    let seq_zero = (seq & 0x1FFF) as u32;
+    let seq_zero = seq & 0x1FFF;
     let seg_n = (n - 1) as u32;
     Some(
         upper
@@ -470,7 +470,7 @@ pub fn parse_segment_header(h: &[u8; 4]) -> (u16, u8, u8) {
 /// then AckedSegments with bit n set for every segment n received.
 pub fn segment_ack(seq_zero: u16, received: &[bool]) -> [u8; 7] {
     let acked: u32 = received.iter().enumerate().filter(|(_, r)| **r).fold(0, |a, (i, _)| a | 1 << i);
-    let mid = (seq_zero as u16 & 0x1FFF) << 2;
+    let mid = (seq_zero & 0x1FFF) << 2;
     let mut out = [0u8; 7];
     out[0] = 0x00;
     out[1..3].copy_from_slice(&mid.to_be_bytes());
@@ -927,6 +927,8 @@ mod tests {
         assert!(mitm_accepted(&sp, &inputs, &auth, &auth, &[9; 16], &rp), "a correct guess would work");
     }
     #[test]
+    // The digit groups mirror the layout: 32-bit IV index, then 24-bit sequence number.
+    #[allow(clippy::unusual_byte_groupings)]
     fn replay_list_and_iv_index_follow_the_spec() {
         // IVISeq layout.
         assert_eq!(iviseq(0x1234_5678, 0x00_0007), 0x1234_5678_00_0007);

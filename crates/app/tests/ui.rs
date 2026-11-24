@@ -21,6 +21,7 @@ fn shot(h: &mut Harness<'static, Shell>, name: &str) {
 #[test]
 fn every_demo_runs_and_renders() {
     let count = demos::registry().demos.len();
+    let mut too_wide = Vec::new();
     for i in 0..count {
         let mut shell = Shell::new(demos::registry(), Saved::default());
         shell.select(i, None);
@@ -29,27 +30,39 @@ fn every_demo_runs_and_renders() {
         let mut h = harness(shell, [1500.0, 950.0]);
         h.run_steps(20);
         shot(&mut h, id);
+        if h.state().overflow() > 1.0 {
+            too_wide.push(format!("{id} ({:.0} points)", h.state().overflow()));
+        }
         for p in presets {
             h.state_mut().apply_preset(p);
             h.run_steps(6);
         }
         shot(&mut h, &format!("{id}--last-preset"));
     }
+    assert!(too_wide.is_empty(), "wider than the demo area: {}", too_wide.join(", "));
 }
 
 #[test]
 fn works_in_a_small_window_and_in_light_mode() {
     let count = demos::registry().demos.len();
+    let mut too_wide = Vec::new();
     for i in 0..count {
         let mut shell = Shell::new(demos::registry(), Saved::default());
         shell.select(i, None);
+        let id = shell.current_id();
         let mut h = harness(shell, [900.0, 600.0]);
         h.ctx.set_theme(egui::Theme::Light);
         h.run_steps(8);
-        if i == 0 {
-            shot(&mut h, "small-light");
+        shot(&mut h, &format!("small-light--{id}"));
+        // With the explanation open the demo may need sideways scrolling; without it,
+        // it must fit the smallest window.
+        h.state_mut().saved.explain_open = false;
+        h.run_steps(4);
+        if h.state().overflow() > 1.0 {
+            too_wide.push(format!("{id} ({:.0} points)", h.state().overflow()));
         }
     }
+    assert!(too_wide.is_empty(), "wider than a 900-point window without the explanation: {}", too_wide.join(", "));
 }
 
 use egui_kittest::kittest::Queryable;
@@ -105,4 +118,22 @@ fn navigation_follows_the_learning_path() {
     h.run_steps(3);
     assert_eq!(h.state().current_id(), first);
     assert!(h.state().saved.visited.iter().any(|v| v == first));
+}
+
+#[test]
+fn a_narrow_window_shows_one_side_panel_at_a_time() {
+    let mut h = harness(Shell::new(demos::registry(), Saved::default()), [900.0, 600.0]);
+    h.run_steps(2);
+    assert!(!h.state().saved.library_open && h.state().saved.explain_open, "start-up keeps the explanation");
+    h.get_by_label("Library").click();
+    h.run_steps(2);
+    assert!(h.state().saved.library_open && !h.state().saved.explain_open, "opening the library closes the explanation");
+    h.get_by_label("Explanation").click();
+    h.run_steps(2);
+    assert!(!h.state().saved.library_open && h.state().saved.explain_open, "opening the explanation closes the library");
+
+    // A wide window keeps both.
+    let mut h = harness(Shell::new(demos::registry(), Saved::default()), [1500.0, 950.0]);
+    h.run_steps(2);
+    assert!(h.state().saved.library_open && h.state().saved.explain_open);
 }

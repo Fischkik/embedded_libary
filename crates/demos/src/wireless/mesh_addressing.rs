@@ -80,8 +80,8 @@ impl Demo for MeshAddressing {
                     let hit = self.last_press.is_some_and(|d| accepts(LAMPS[i].1, &self.subscriptions(i), d));
                     ui.label(RichText::new(LAMPS[i].0).color(if hit { pal.trace[2] } else { pal.text }));
                     ui.monospace(format!("0x{:04X}", LAMPS[i].1));
-                    for g in 0..3 {
-                        ui.checkbox(&mut self.subs[i][g], "").on_hover_text("Subscribe this lamp to the group: it will react to messages sent to the group's address.");
+                    for sub in self.subs[i].iter_mut() {
+                        ui.checkbox(sub, "").on_hover_text("Subscribe this lamp to the group: it will react to messages sent to the group's address.");
                     }
                     ui.end_row();
                 }

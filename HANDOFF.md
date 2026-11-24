@@ -327,13 +327,18 @@ Be honest with the user about these; do not present them as checked.
   The CRC check values and the Zephyr scheduling rules are additionally pinned by tests.
 - **CAN, RS-485 and DALI constants come from Wikipedia**, not from the paid standards. Their
   `refs` say so.
-- **The real window was never opened in this job.** Everything was judged from headless
-  screenshots in dark mode at 1500 x 950. Light mode and the small window run in the tests
-  without a panic, but nobody looked at them for the new demos.
-- **Only some `--last-preset` screenshots were looked at.** Each demo's opening screenshot was.
-- **Older demos may still have the slider cut-off** from rule 4: spectrum, doppler,
-  range_doppler, mesh_flooding, mesh_pdu, modulation, wave_basics, pwm. Not checked.
-- `cargo clippy --workspace` reports 20 warnings. I did not review them.
+- **Done on 2026-11-23:** the slider rows of all demos were checked (a script looks for
+  sliders in a row without `widgets::wrap` and sliders without hover text; 8 demos fixed);
+  `cargo clippy --workspace --all-targets` is clean; every demo was looked at in light mode
+  at 900 x 600 (`target/shots/small-light--<id>.png`). In a window narrower than 1200 points
+  the app now shows one side panel at a time, and the tests check that no demo is wider
+  than its area.
+- **Still open:** 22 demos are wider than the demo area of a 900-point window when the
+  explanation is open (they fit once it is closed). They scroll sideways instead of being
+  hidden; making them narrower would mean redesigning each. The test
+  `works_in_a_small_window_and_in_light_mode` lists them if you remove the line that closes
+  the explanation. The real window has still not been opened: everything was judged from
+  headless screenshots. Only some `--last-preset` screenshots were looked at.
 - The browser (wasm) build is not wired up and was never compiled.
 - **Radar example values**: the glass/plasterboard loss (-3 dB), the radar motion threshold
   and 5 Hz filter in `radar-vs-pir`, and the presence threshold (-20 dB) are illustrative and

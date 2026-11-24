@@ -89,11 +89,10 @@ pub fn show(ui: &mut Ui, entry: &DemoEntry) -> Option<&'static str> {
                 ui.label(RichText::new("Watch for: ").color(pal.good).strong());
                 ui.label(x.watch);
             });
-            if let Some(preset) = x.preset {
-                if ui.small_button(format!("Show me  (experiment {})", i + 1)).clicked() {
+            if let Some(preset) = x.preset
+                && ui.small_button(format!("Show me  (experiment {})", i + 1)).clicked() {
                     clicked = Some(preset);
                 }
-            }
         });
     }
 

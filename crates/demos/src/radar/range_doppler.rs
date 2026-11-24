@@ -55,9 +55,14 @@ impl Demo for RangeDopplerDemo {
                 ui.push_id(m.key, |ui| {
                     ui.horizontal_wrapped(|ui| {
                         ui.label(RichText::new(format!("object {}", i + 1)).color(pal.trace[i % 6]).strong());
-                        ui.add(egui::Slider::new(&mut m.range_m, 0.8..=max_range * 0.95).text("distance").suffix(" m").fixed_decimals(1));
-                        ui.add(egui::Slider::new(&mut m.approach_mps, -8.0..=8.0).text("speed towards radar").suffix(" m/s").fixed_decimals(1))
-                            .on_hover_text("Positive = approaching. Walking is about 1.4 m/s, running 3 to 5 m/s.");
+                        widgets::wrap(ui, "distance", |ui| {
+                            ui.add(egui::Slider::new(&mut m.range_m, 0.8..=max_range * 0.95).text("distance").suffix(" m").fixed_decimals(1))
+                                .on_hover_text("How far the object is from the radar. It moves the object's spot left or right on the map.")
+                        });
+                        widgets::wrap(ui, "speed", |ui| {
+                            ui.add(egui::Slider::new(&mut m.approach_mps, -8.0..=8.0).text("speed towards radar").suffix(" m/s").fixed_decimals(1))
+                                .on_hover_text("Positive = approaching. Walking is about 1.4 m/s, running 3 to 5 m/s.")
+                        });
                         if ui.small_button("Remove").clicked() {
                             remove = Some(i);
                         }
@@ -79,7 +84,8 @@ impl Demo for RangeDopplerDemo {
                     ui.selectable_value(&mut self.chirps, n, format!("{n}")).on_hover_text("More chirps = longer measurement = finer speed resolution.");
                 }
             });
-            ui.add(egui::Slider::new(&mut self.noise, 0.0..=2.0).text("receiver noise").fixed_decimals(2));
+            ui.add(egui::Slider::new(&mut self.noise, 0.0..=2.0).text("receiver noise").fixed_decimals(2))
+                .on_hover_text("Random noise added to the received signal. It shows up as speckle across the whole map.");
         });
         self.clock.controls(ui);
 

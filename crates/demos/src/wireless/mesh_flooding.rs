@@ -106,10 +106,14 @@ impl Demo for MeshFlooding {
                     self.send();
                 }
                 let before = (self.ttl, self.range, self.use_cache);
-                ui.add(egui::Slider::new(&mut self.ttl, 0..=10).text("TTL"))
-                    .on_hover_text("Time to live: how many more times the message may be passed on. Every relay lowers it by one.");
-                ui.add(egui::Slider::new(&mut self.range, 3.0..=16.0).text("radio range").suffix(" m").fixed_decimals(1))
-                    .on_hover_text("How far a transmission can be heard. The faint lines connect nodes that can hear each other.");
+                widgets::wrap(ui, "TTL", |ui| {
+                    ui.add(egui::Slider::new(&mut self.ttl, 0..=10).text("TTL"))
+                        .on_hover_text("Time to live: how many more times the message may be passed on. Every relay lowers it by one.")
+                });
+                widgets::wrap(ui, "radio range", |ui| {
+                    ui.add(egui::Slider::new(&mut self.range, 3.0..=16.0).text("radio range").suffix(" m").fixed_decimals(1))
+                        .on_hover_text("How far a transmission can be heard. The faint lines connect nodes that can hear each other.")
+                });
                 ui.checkbox(&mut self.use_cache, "nodes remember what they have seen").on_hover_text("The network message cache. Switch it off to see why it is essential.");
                 if before != (self.ttl, self.range, self.use_cache) {
                     self.dirty = true;

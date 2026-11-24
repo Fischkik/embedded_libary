@@ -55,8 +55,14 @@ impl Demo for Spectrum {
             for (i, tone) in self.tones.iter_mut().enumerate() {
                 ui.horizontal_wrapped(|ui| {
                     ui.checkbox(&mut tone.on, format!("tone {}", i + 1)).on_hover_text("Add this tone to the signal");
-                    ui.add_enabled(tone.on, widgets::si_slider(&mut tone.f_hz, 500.0..=40_000.0, "frequency", "Hz").logarithmic(true));
-                    ui.add_enabled(tone.on, egui::Slider::new(&mut tone.amplitude, 0.01..=1.0).logarithmic(true).text("amplitude").fixed_decimals(2));
+                    widgets::wrap(ui, &format!("frequency {i}"), |ui| {
+                        ui.add_enabled(tone.on, widgets::si_slider(&mut tone.f_hz, 500.0..=40_000.0, "frequency", "Hz").logarithmic(true))
+                            .on_hover_text("How many times per second this tone repeats. It shows up as a spike at this frequency in the spectrum.")
+                    });
+                    widgets::wrap(ui, &format!("amplitude {i}"), |ui| {
+                        ui.add_enabled(tone.on, egui::Slider::new(&mut tone.amplitude, 0.01..=1.0).logarithmic(true).text("amplitude").fixed_decimals(2))
+                            .on_hover_text("How strong this tone is: the height of its spike in the spectrum.")
+                    });
                 });
             }
             ui.checkbox(&mut self.square, "Make tone 1 a square wave instead of a smooth sine")

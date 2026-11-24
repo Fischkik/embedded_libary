@@ -91,11 +91,10 @@ impl Demo for BleAdvPacket {
             ui.horizontal(|ui| {
                 let l = ui.label("Address:");
                 let r = ui.add(egui::TextEdit::singleline(&mut self.address_text).font(egui::TextStyle::Monospace).desired_width(170.0)).labelled_by(l.id);
-                if r.changed() {
-                    if let Some(Ok(a)) = unhex(&self.address_text).map(<[u8; 6]>::try_from) {
+                if r.changed()
+                    && let Some(Ok(a)) = unhex(&self.address_text).map(<[u8; 6]>::try_from) {
                         self.address = a;
                     }
-                }
                 ui.checkbox(&mut self.random_address, "random address").on_hover_text("Sets the TxAdd flag in the header: the address is a random one, not a registered manufacturer address.");
             });
             ui.horizontal(|ui| {
@@ -247,11 +246,10 @@ impl Demo for BleAdvPacket {
                         if p.tx_add { "random" } else { "public" },
                         name.map_or(String::new(), |n| format!(",  name \"{n}\""))
                     ));
-                    if items.iter().any(|i| i.ad_type == 0x2A) && ui.button("This carries a mesh message - open it in the Mesh packet demo").clicked() {
-                        if let Some(m) = items.iter().find(|i| i.ad_type == 0x2A) {
+                    if items.iter().any(|i| i.ad_type == 0x2A) && ui.button("This carries a mesh message - open it in the Mesh packet demo").clicked()
+                        && let Some(m) = items.iter().find(|i| i.ad_type == 0x2A) {
                             cx.open = Some(("mesh-pdu", [vec![0xFF], m.data.clone()].concat()));
                         }
-                    }
                 }
                 Err(e) => widgets::status(ui, false, format!("The bytes passed the CRC but do not form a valid advertising packet: {e}")),
             }

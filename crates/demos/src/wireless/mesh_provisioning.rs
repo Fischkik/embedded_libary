@@ -81,7 +81,7 @@ impl Demo for MeshProvisioning {
             } else {
                 "Each side sends a public key. From its own private key and the other's public key, each computes the same shared secret (elliptic-curve Diffie-Hellman). An eavesdropper sees both public keys but cannot compute the secret."
             },
-            Some(format!("shared secret (stand-in, the elliptic-curve step is not computed): {}...", hex(&secret[..8]))),
+            Some(format!("shared secret = {}...\n(a stand-in: the elliptic-curve step is not computed)", hex(&secret[..8]))),
             None,
         );
         let auth_text = if self.oob == Oob::Number { format!("AuthValue = the number {:06} = {}", self.number, hex(&auth)) } else { format!("AuthValue = zero = {}", hex(&auth)) };
@@ -110,7 +110,7 @@ impl Demo for MeshProvisioning {
             } else {
                 "The phone stops: authentication failed, so no network key is sent."
             },
-            accepted.then(|| format!("provisioning data, 25 octets:\n{}\nencrypted with SessionKey, plus an 8-octet MIC:\n{}\nDeviceKey = {}", hex(&data), hex(&enc), hex(&keys.device_key))),
+            accepted.then(|| format!("provisioning data, 25 octets:\n{}\nencrypted with SessionKey, plus an 8-octet MIC:\n{}\nDeviceKey = {}", rows(&data), rows(&enc), hex(&keys.device_key))),
             None,
         );
 
@@ -202,4 +202,9 @@ pub fn entry() -> DemoEntry {
             ],
         },
     }
+}
+
+/// Hex bytes, 16 to a line, so that long values do not make the demo wider than its area.
+fn rows(bytes: &[u8]) -> String {
+    bytes.chunks(16).map(hex).collect::<Vec<_>>().join("\n")
 }

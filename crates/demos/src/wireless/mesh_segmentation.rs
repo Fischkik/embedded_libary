@@ -42,11 +42,10 @@ impl Demo for MeshSegmentation {
                 let lost = self.lost.contains(&(s.seg_o as usize));
                 egui::Frame::group(ui.style()).show(ui, |ui| {
                     ui.horizontal_wrapped(|ui| {
-                        if ui.selectable_label(lost, if lost { "lost on the way" } else { "arrives" }).on_hover_text("Click to make this segment get lost the first time it is sent.").clicked() {
-                            if !self.lost.remove(&(s.seg_o as usize)) {
+                        if ui.selectable_label(lost, if lost { "lost on the way" } else { "arrives" }).on_hover_text("Click to make this segment get lost the first time it is sent.").clicked()
+                            && !self.lost.remove(&(s.seg_o as usize)) {
                                 self.lost.insert(s.seg_o as usize);
                             }
-                        }
                         ui.label(RichText::new(format!("segment {} of {}", seg_o, seg_n)).strong().color(if lost { pal.bad } else { pal.text }));
                         ui.label(RichText::new(format!("SeqZero 0x{seq_zero:04X}  SegO {seg_o}  SegN {seg_n}")).small().color(pal.dim));
                     });

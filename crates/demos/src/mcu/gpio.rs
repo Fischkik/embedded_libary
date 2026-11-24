@@ -37,8 +37,10 @@ impl Demo for Gpio {
         widgets::group(ui, "The firmware", |ui| {
             ui.add(egui::Slider::new(&mut self.sample_ms, 0.1..=20.0).logarithmic(true).text("reads the pin every").suffix(" ms").fixed_decimals(1))
                 .on_hover_text("How often the software looks at the pin, for example from a timer interrupt.");
-            ui.checkbox(&mut self.debounce, "debounce: only believe a change after several identical readings in a row");
-            ui.add_enabled(self.debounce, egui::Slider::new(&mut self.stable_samples, 2..=30).text("identical readings needed"));
+            ui.checkbox(&mut self.debounce, "debounce: only believe a change after several identical readings in a row")
+                .on_hover_text("Switch on to filter out the bouncing in software.");
+            ui.add_enabled(self.debounce, egui::Slider::new(&mut self.stable_samples, 2..=30).text("identical readings needed"))
+                .on_hover_text("How many readings in a row must agree before the software accepts the new level. More = safer against bounce, but slower to react.");
         });
 
         let edges = bouncy_button(PRESS_MS, RELEASE_MS, self.bounce_ms, self.bounces, &mut Rng::new(self.seed));

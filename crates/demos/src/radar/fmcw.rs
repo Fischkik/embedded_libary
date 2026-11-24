@@ -33,7 +33,8 @@ impl Demo for RadarFmcw {
                 .on_hover_text("How far the frequency climbs during one chirp. 24 GHz sensors may use 250 MHz; 60 GHz sensors several GHz.");
             ui.add(widgets::si_slider(&mut self.radar.chirp_s, 32e-6..=512e-6, "chirp duration", "s").logarithmic(true))
                 .on_hover_text("How long one sweep takes.");
-            ui.add(egui::Slider::new(&mut self.noise, 0.0..=1.0).text("receiver noise").fixed_decimals(2));
+            ui.add(egui::Slider::new(&mut self.noise, 0.0..=1.0).text("receiver noise").fixed_decimals(2))
+                .on_hover_text("Random noise added to the received signal. It raises the floor of the spectrum.");
         });
         widgets::group(ui, "The objects (drag them in the picture)", |ui| {
             ui.checkbox(&mut self.second_target, "second object").on_hover_text("Add a second reflecting object to see whether the radar can tell them apart.");

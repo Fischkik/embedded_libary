@@ -70,14 +70,14 @@ pub fn uart_receive(frame: &[(UartBit, bool)], clock_error: f64) -> UartRx {
     let samples: Vec<(f64, bool)> = (0..frame.len())
         .map(|k| {
             let t = (k as f64 + 0.5) * (1.0 + clock_error);
-            (t, frame.get(t.floor() as usize).map_or(true, |b| b.1))
+            (t, frame.get(t.floor() as usize).is_none_or(|b| b.1))
         })
         .collect();
     let byte = (0..8).fold(0u8, |v, i| v | (samples[1 + i].1 as u8) << i);
     let has_parity = frame.iter().any(|b| b.0 == UartBit::Parity);
     let parity_ok = has_parity.then(|| {
         let sent_even = frame.iter().filter(|b| matches!(b.0, UartBit::Data(_) | UartBit::Parity) && b.1).count() % 2 == 0;
-        let seen_even = (byte.count_ones() as usize + samples[9].1 as usize) % 2 == 0;
+        let seen_even = (byte.count_ones() as usize + samples[9].1 as usize).is_multiple_of(2);
         sent_even == seen_even
     });
     UartRx { byte, parity_ok, stop_ok: samples[frame.len() - 1].1, samples }

@@ -6,8 +6,11 @@ explain embedded systems to one person, each with a beginner-level explanation b
 
 ## Status
 
+On 2026-11-23 the open points from `HANDOFF.md` section 6 were worked through: slider rows,
+clippy (now clean), light mode, small windows. What is left is listed there.
+
 The job "build every planned demo" (2026-11-16 to 2026-11-17) is **finished**: 71 demos in 7
-learning paths, `planned()` is empty, `cargo test --workspace` passes (140 tests). `HANDOFF.md`
+learning paths, `planned()` is empty, `cargo test --workspace` passes (141 tests). `HANDOFF.md`
 keeps the record of that job: a note and the sources for each demo, and in section 6 what
 was not verified. Nothing of it is committed yet; the user commits.
 
@@ -230,7 +233,11 @@ you may remember. When unsure, read the source under
   with "No glyph". Plain ASCII plus `µ` and common Latin-1 symbols are safe.
 - Give every slider a `.text("label")`, and link a `TextEdit` to its label with
   `.labelled_by(label.id)`, so the accessibility check passes.
-- The demo area scrolls vertically only. Use `ui.horizontal_wrapped` for rows of controls so
+- **A demo must fit the width of its area.** The tests measure it and fail when a demo is
+  wider than its area at the normal size (1500 x 950, both side panels open) or in the
+  smallest window (900 x 600) with the explanation closed. The demo area can scroll
+  sideways, but only as a fallback for small windows. Break long monospace lines (hex
+  bytes: 16 per line). Use `ui.horizontal_wrapped` for rows of controls so
   they wrap in narrow windows instead of being cut off. **A slider does not wrap by itself**:
   inside such a row, add it as `widgets::wrap(ui, "key", |ui| ui.add(slider).on_hover_text(..));`.
   Otherwise it runs off the right edge and pulls every graph below it out of view with it.

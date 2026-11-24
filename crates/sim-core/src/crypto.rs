@@ -81,6 +81,8 @@ impl Aes128 {
         let mut st = *block;
         let add = |st: &mut [u8; 16], rk: &[u8; 16]| st.iter_mut().zip(rk).for_each(|(a, b)| *a ^= b);
         add(&mut st, &self.round_keys[0]);
+        // Counting rounds 1 to 10 keeps the code next to FIPS-197's pseudocode.
+        #[allow(clippy::needless_range_loop)]
         for round in 1..=10 {
             // SubBytes + ShiftRows (the state is stored column by column).
             let mut t = [0u8; 16];
@@ -128,7 +130,7 @@ pub fn cmac(key: &[u8; 16], msg: &[u8]) -> [u8; 16] {
     let k1 = dbl(aes.encrypt(&[0; 16]));
     let k2 = dbl(k1);
     let blocks = msg.len().div_ceil(16).max(1);
-    let complete = !msg.is_empty() && msg.len() % 16 == 0;
+    let complete = !msg.is_empty() && msg.len().is_multiple_of(16);
     let mut x = [0u8; 16];
     for i in 0..blocks - 1 {
         for j in 0..16 {

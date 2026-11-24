@@ -743,11 +743,10 @@ pub fn simulate_lock(tasks: &[LockTask], inheritance: bool, duration_ms: f64) ->
             }
         };
         let running = active.iter().copied().filter(|&i| !blocked(i, owner)).min_by_key(|&i| (effective(i), i));
-        if let Some(r) = running {
-            if needs(r) {
+        if let Some(r) = running
+            && needs(r) {
                 owner = Some(r);
             }
-        }
         for &i in &active {
             let state = if running == Some(i) { LockState::Running } else if blocked(i, owner) { LockState::Blocked } else { LockState::Ready };
             match last_span[i].map(|s| &mut trace.spans[s]) {

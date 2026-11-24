@@ -22,6 +22,9 @@ impl Default for Saved {
     }
 }
 
+/// Below this window width (in points) only one side panel is shown at a time.
+pub const NARROW_WINDOW: f32 = 1200.0;
+
 pub struct Shell {
     pub reg: Registry,
     pub saved: Saved,
@@ -29,6 +32,8 @@ pub struct Shell {
     demo: Box<dyn Demo>,
     search: String,
     styled: bool,
+    /// How many points the demo was wider than its area in the last frame (0 if it fit).
+    overflow: f32,
 }
 
 impl Shell {
@@ -36,9 +41,15 @@ impl Shell {
         assert!(!reg.demos.is_empty(), "the registry has no demos");
         let current = reg.index_of(&saved.current).unwrap_or(0);
         let demo = (reg.demos[current].make)();
-        let mut shell = Self { reg, saved, current, demo, search: String::new(), styled: false };
+        let mut shell = Self { reg, saved, current, demo, search: String::new(), styled: false, overflow: 0.0 };
         shell.mark_visited();
         shell
+    }
+
+    /// How many points the current demo stuck out past the right edge of its area in
+    /// the last frame. Anything there is hidden under the explanation panel.
+    pub fn overflow(&self) -> f32 {
+        self.overflow
     }
 
     pub fn current_id(&self) -> &'static str {
@@ -87,6 +98,10 @@ impl Shell {
             self.styled = true;
         }
         let (time, dt) = ui.input(|i| (i.time, i.stable_dt.min(0.1) as f64));
+        // In a narrow window two side panels leave the demo too little room: its sliders
+        // and graphs end up hidden under the explanation. Show one side panel at a time.
+        let was = (self.saved.library_open, self.saved.explain_open);
+        let narrow = ui.available_width() < NARROW_WINDOW;
         let mut go: Option<(usize, Option<Vec<u8>>)> = None;
         let mut preset: Option<&'static str> = None;
 
@@ -95,6 +110,15 @@ impl Shell {
             self.top_bar(ui, &mut go);
             ui.add_space(3.0);
         });
+        if narrow && self.saved.library_open && self.saved.explain_open {
+            // Keep the panel that was just opened. If both were already open (at start-up
+            // or after the window shrank), keep the explanation.
+            if !was.0 {
+                self.saved.explain_open = false;
+            } else {
+                self.saved.library_open = false;
+            }
+        }
 
         let mut library_open = self.saved.library_open;
         egui::Panel::left("library").resizable(true).default_size(285.0).min_size(200.0).show_collapsible(ui, &mut library_open, |ui| {
@@ -112,14 +136,16 @@ impl Shell {
 
         egui::CentralPanel::default().show(ui, |ui| {
             let mut cx = DemoCx::new(time, dt);
-            egui::ScrollArea::vertical().id_salt("demo_scroll").auto_shrink(false).show(ui, |ui| {
+            // Demos are laid out to fit the width; sideways scrolling is only the fallback
+            // for a small window, so that nothing ends up hidden under the explanation.
+            let out = egui::ScrollArea::both().id_salt("demo_scroll").auto_shrink(false).show(ui, |ui| {
                 ui.push_id(self.reg.demos[self.current].id, |ui| self.demo.ui(ui, &mut cx));
             });
-            if let Some((id, data)) = cx.open {
-                if let Some(i) = self.reg.index_of(id) {
+            self.overflow = (out.content_size.x - out.inner_rect.width()).max(0.0);
+            if let Some((id, data)) = cx.open
+                && let Some(i) = self.reg.index_of(id) {
                     go = Some((i, Some(data)));
                 }
-            }
         });
 
         if let Some(p) = preset {
@@ -136,9 +162,9 @@ impl Shell {
         ui.horizontal(|ui| {
             ui.toggle_value(&mut self.saved.library_open, "Library").on_hover_text("Show or hide the list of demos");
             ui.label(egui::RichText::new("Embedded Lab").strong());
-            ui.separator();
-            ui.label(egui::RichText::new(breadcrumb).weak());
 
+            // Buttons on the right first, so that the breadcrumb gets only the space that
+            // is left and is shortened with "..." instead of being drawn under them.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let dark = ui.visuals().dark_mode;
                 if ui.selectable_label(dark, "Dark").on_hover_text("Dark colours").clicked() {
@@ -165,6 +191,10 @@ impl Shell {
                         *go = prev.map(|n| (n, None));
                     }
                 }
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.separator();
+                    ui.add(egui::Label::new(egui::RichText::new(breadcrumb.as_str()).weak()).truncate()).on_hover_text(breadcrumb.as_str());
+                });
             });
         });
     }
